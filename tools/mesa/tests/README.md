@@ -2,7 +2,7 @@
 
 ## 1. 运行
 
-`test-ir3-output-contracts.py` 从固定 SHA-256 的 Mesa 26.2.5 发布包解压源码，在新目录构建原生 `libfreedreno_ir3`、NIR 与测试程序。它先运行旧版，再应用 `0018-ir3-alias-relative-and-fsat.patch` 并重编同一测试。测试不访问 GPU。
+`test-ir3-output-contracts.py` 从固定 SHA-256 的 Mesa 26.2.5 发布包解压源码，在新目录构建原生 `libfreedreno_ir3`、NIR 与测试程序。它先运行旧版，再应用 `0018-ir3-alias-relative-and-fsat.patch` 并重新编译同一测试。测试不访问 GPU。
 
 依赖为 Python 3.12 或更新版本、Mako、PyYAML、packaging、Meson 1.12.1、C/C++ 编译器、Ninja、Bison 3.8、Flex、pkg-config 与 patch。macOS 自带的 Bison 版本过旧；使用 Homebrew Bison，并将其目录放在 `PATH` 前面。构建使用 `--wrap-mode=nofallback`，缺少依赖会直接报告，不下载 Meson 子项目。
 
@@ -17,7 +17,7 @@ PATH="$(brew --prefix bison)/bin:$PATH" CC=clang CXX=clang++ \
   --work-dir out/ir3-output-contracts --jobs 4
 ```
 
-脚本仅在新目录中追加测试目标，不改 `mk-mesa.sh` 使用的源码或构建目录。`baseline.log` 和 `fixed.log` 包含每项检查及生成的 A830 指令；`setup.log`、`baseline-build.log`、`fixed-build.log` 和 `patch.log` 保存构建输出。正常结束要求旧版测试返回失败，修复版返回成功。
+脚本仅在新目录中追加测试目标，不修改 `mk-mesa.sh` 使用的源码或构建目录。`baseline.log` 和 `fixed.log` 包含每项检查及生成的 A830 指令；`setup.log`、`baseline-build.log`、`fixed-build.log` 和 `patch.log` 保存构建输出。正常结束要求旧版测试返回失败，修复版返回成功。
 
 ## 2. 样本与检查
 
@@ -37,7 +37,7 @@ PATH="$(brew --prefix bison)/bin:$PATH" CC=clang CXX=clang++ \
 
 ## 3. 验证范围
 
-宿主测试验证优化器的数据保留和 A830 指令选择，包含 ISA 汇编。它使用发布包加本补丁。另一次隔离构建从相同发布包应用本仓全部 Mesa 补丁，并复制 AIR 与 annibale-drm 源码，已完成 `libannibaleair.dylib` 的 arm64e 链接，目标最低版本 iOS 26.0，SDK 27.1。实际 GPU 像素仍待真机验证。
+宿主测试验证优化器的数据保留和 A830 指令选择，包含 ISA 汇编。它使用发布包加本补丁。另一次隔离构建从相同发布包应用本仓库全部 Mesa 补丁，并复制 AIR 与 annibale-drm 源码，已完成 `libannibaleair.dylib` 的 arm64e 链接，目标最低版本 iOS 26.0，SDK 27.1。实际 GPU 像素仍待真机验证。
 
 `tools/air/check.sh -q` 已执行，因缺少 `build/mesa-host/build/src/compiler/air/air2nir` 提前退出，未进入 AIR corpus 测试。四个输入 metallib 均存在。该入口的宿主构建脚本仍固定 Mesa 25.0.7，本轮未调用它。
 
