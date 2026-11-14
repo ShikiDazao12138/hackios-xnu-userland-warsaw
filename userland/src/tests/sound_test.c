@@ -43,6 +43,7 @@
 #include <objc/runtime.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <sys/sysctl.h>
 #include <sys/time.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -154,6 +155,10 @@ raw(double seconds)
 		if (mach_absolute_time() < due) {
 			mach_wait_until(due);
 		}
+	}
+	uint64_t finish = start + (uint64_t)((__uint128_t)total * 1000000000ull / RATE * timebase.denom / timebase.numer);
+	if (mach_absolute_time() < finish) {
+		mach_wait_until(finish);
 	}
 	close(device);
 	printf("sound_test: %llu frames written straight to the device\n", written);
@@ -545,6 +550,41 @@ main(int argc, char **argv)
 			failed |= tone(seconds);
 		} else if (strcmp(argv[i], "raw") == 0 && i + 1 < argc) {
 			failed |= raw(atof(argv[++i]));
+		} else if (strcmp(argv[i], "snapshot") == 0) {
+			size_t cap = 0;
+			if (sysctlbyname("kern.annibale.sound_snapshot", NULL, &cap, NULL, 0) == 0 && cap >= 24) {
+				uint8_t *buf = malloc(cap);
+				size_t len = cap;
+				if (buf != NULL && sysctlbyname("kern.annibale.sound_snapshot", buf, &len, NULL, 0) == 0 && len >= 24) {
+					uint32_t rate = *(const uint32_t *)(buf + 8);
+					uint32_t channels = *(const uint32_t *)(buf + 12);
+					uint64_t blocks = *(const uint64_t *)(buf + 16);
+					uint64_t total_frames = 0, nonzero_frames = 0;
+					uint32_t max_abs = 0;
+					size_t off = 24;
+					for (uint64_t b = 0; b < blocks && off + 16 <= len; b++) {
+						uint32_t fcount = *(const uint32_t *)(buf + off + 8);
+						size_t pcm_bytes = (size_t)fcount * 4;
+						off += 16;
+						if (off + pcm_bytes > len) break;
+						const int16_t *pcm = (const int16_t *)(buf + off);
+						for (uint32_t f = 0; f < fcount; f++) {
+							int32_t l = pcm[2 * f], r = pcm[2 * f + 1];
+							uint32_t al = (uint32_t)(l < 0 ? -l : l);
+							uint32_t ar = (uint32_t)(r < 0 ? -r : r);
+							if (al || ar) nonzero_frames++;
+							if (al > max_abs) max_abs = al;
+							if (ar > max_abs) max_abs = ar;
+						}
+						total_frames += fcount;
+						off += pcm_bytes;
+					}
+					printf("sound_test: snapshot bytes=%zu rate=%u ch=%u blocks=%llu frames=%llu nonzero_frames=%llu peak=%u\n",
+					    len, rate, channels, (unsigned long long)blocks,
+					    (unsigned long long)total_frames, (unsigned long long)nonzero_frames, max_abs);
+				}
+				free(buf);
+			}
 		} else if (strcmp(argv[i], "level") == 0 && i + 1 < argc) {
 			peak = atof(argv[++i]);
 			peak = peak < 0 ? 0 : peak > 1 ? 1 : peak;

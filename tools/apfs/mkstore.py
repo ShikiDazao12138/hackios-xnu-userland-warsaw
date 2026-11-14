@@ -75,7 +75,7 @@ def main(argv):
 
     # mkapfs.py writes the zeros out; on this machine they need not take room (on the flash they
     # will, and the image is written there whole either way)
-    if not args.dense:
+    if not args.dense and shutil.which('fallocate'):
         subprocess.call(['fallocate', '-d', args.output])
     size = os.path.getsize(args.output)
     print('mkstore.py: %s: volume %s, %d slots of %d bytes (%d of payload each), container %d '

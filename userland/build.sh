@@ -319,7 +319,10 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	$DYN -framework CoreFoundation -lMobileGestalt -o obj/mg_test src/tests/mg_test.c
 	$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/torch_test src/tests/torch_test.c
 	$DYN -O2 -o obj/camera_test src/tests/camera_test.c src/services/camera_isp.c
-	$DYN -fobjc-arc -framework Foundation -framework AVFoundation -o obj/camera_avtest src/tests/camera_avtest.m
+	$DYN -fobjc-arc -framework Foundation -framework AVFoundation -o obj/camera_avtest src/tests/camera_avtest.m &&
+		{ ${LDID:-ldid} -Ssrc/tests/camera_avtest.entitlements obj/camera_avtest 2>/dev/null ||
+		  /usr/bin/codesign --force --sign - --entitlements src/tests/camera_avtest.entitlements obj/camera_avtest 2>/dev/null ||
+		  echo "build.sh: no ldid: camera_avtest is unsigned, and TCC may deny camera access"; }
 	# (the microphone as an application records: allowed to, by an entitlement, if ldid is there)
 	$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/record_test src/tests/record_test.c &&
 		{ ${LDID:-ldid} -Ssrc/tests/record_test.entitlements obj/record_test 2>/dev/null ||
@@ -782,21 +785,36 @@ if [ -d ../fw-gpu ]; then
 	mkdir -p root/fw
 	cp ../fw-gpu/* root/fw/
 fi
-# Native front mode 4 uses the original Android sensor module and the kernel's checked exporter.
-camera_module=../fw-camera/com.qti.sensormodule.annibale_sunny_ov20b40_front_i.bin
+# Native front mode 4 and wide mode 24 use the original Android sensor modules.
 camera_tools=../../hackios-xnu-kernel/tools
 [ -f "$camera_tools/camsensor.py" ] || camera_tools=../tools
-if [ ! -f "$camera_module" ]; then
-	echo "build.sh: missing original camera sensor module: $camera_module" >&2
-	exit 1
-fi
 if [ ! -f "$camera_tools/camsensor.py" ]; then
 	echo "build.sh: missing camera profile exporter: $camera_tools/camsensor.py" >&2
 	exit 1
 fi
 mkdir -p root/fw
-python3 "$camera_tools/camsensor.py" --profile "$camera_module" 4 root/fw/camera-ov20b-front-mode4.tab >/dev/null
-unset camera_module camera_tools
+for camera_sensor in front wide; do
+	case "$camera_sensor" in
+		front)
+			camera_module=../fw-camera/com.qti.sensormodule.annibale_sunny_ov20b40_front_i.bin
+			camera_mode=4
+			camera_output=camera-ov20b-front-mode4.tab
+			;;
+		wide)
+			camera_module=../fw-camera/com.qti.sensormodule.annibale_aac_ovx8000_wide_i.bin
+			camera_mode=24
+			camera_output=camera-ovx8000-wide-mode24.tab
+			;;
+	esac
+	if [ ! -f "$camera_module" ]; then
+		echo "build.sh: missing original camera sensor module: $camera_module" >&2
+		exit 1
+	fi
+	python3 "$camera_tools/camsensor.py" --profile "$camera_module" "$camera_mode" "root/fw/$camera_output" >/dev/null
+done
+unset camera_module camera_tools camera_sensor camera_mode camera_output
+python3 ./mkcameraresources.py "$IOS/rootfs/System/Library/PrivateFrameworks/CMCapture.framework/V57/AVCaptureSession.plist" \
+	root/fw/camera-ov20b-front-mode4.tab root/lib/CMCaptureResources/V57/AVCaptureSession.plist
 # ... and their colour tuning (libannibale-media's processor, src/camera_isp.c), made by tools/camtuning.py out of the
 # cameras' tuning files beside them, com.qti.tuned.annibale_<maker>_<sensor>_<camera>.bin: camera-<sensor>.isp
 for tuned in ../fw-camera/com.qti.tuned.annibale_*.bin; do

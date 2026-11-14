@@ -63,11 +63,11 @@ render_piece(void *context, size_t i)
 		isp_render_still_nv12(j->isp, j->f, j->raw, CVPixelBufferGetBaseAddressOfPlane(j->pb, 0),
 		    CVPixelBufferGetBytesPerRowOfPlane(j->pb, 0), CVPixelBufferGetBaseAddressOfPlane(j->pb, 1),
 		    CVPixelBufferGetBytesPerRowOfPlane(j->pb, 1), j->width, j->height, first, end,
-		    j->format == PF_420V || j->format == PF_X420);
+		    j->format == PF_420V || j->format == PF_X420 || j->format == PF_X422);
 	} else {
 		isp_render_nv12(j->isp, j->f, j->raw, CVPixelBufferGetBaseAddressOfPlane(j->pb, 0), CVPixelBufferGetBytesPerRowOfPlane(j->pb, 0),
 		    CVPixelBufferGetBaseAddressOfPlane(j->pb, 1), CVPixelBufferGetBytesPerRowOfPlane(j->pb, 1), j->width, j->height, first, end,
-		    j->format == PF_420V || j->format == PF_X420);
+		    j->format == PF_420V || j->format == PF_X420 || j->format == PF_X422);
 	}
 }
 
@@ -192,7 +192,7 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	width = (uint32_t)CVPixelBufferGetWidth(pb);
 	height = (uint32_t)CVPixelBufferGetHeight(pb);
 	if (width == 0 || height == 0 ||
-	    (pf != PF_420F && pf != PF_420V && pf != PF_X420 && pf != PF_XF20 && pf != PF_BGRA)) {
+	    (pf != PF_420F && pf != PF_420V && pf != PF_X420 && pf != PF_X422 && pf != PF_XF20 && pf != PF_BGRA)) {
 		if (out->delivered == 0 && out->said_shape == false) {
 			out->said_shape = true;
 			say("%s: %ux%u %c%c%c%c buffers are not for this ISP", out->name, width, height, pf >> 24, pf >> 16 & 255,
@@ -208,7 +208,7 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	uint64_t began = mach_absolute_time();
 
 	dispatch_apply_f(job.pieces, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), &job, render_piece);
-	if (pf == PF_X420 || pf == PF_XF20) {
+	if (pf == PF_X420 || pf == PF_X422 || pf == PF_XF20) {
 		uint8_t *y_base = CVPixelBufferGetBaseAddressOfPlane(pb, 0);
 		size_t y_stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0);
 		uint8_t *uv_base = CVPixelBufferGetBaseAddressOfPlane(pb, 1);
@@ -222,12 +222,23 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 				r16[x] = (uint16_t)r8[x] << 8;
 			}
 		}
-		for (uint32_t y = 0; y < height / 2; y++) {
-			uint8_t *r8 = uv_base + (size_t)y * uv_stride;
-			uint16_t *r16 = (uint16_t *)r8;
+		if (pf == PF_X422) {
+			for (int32_t y = (int32_t)height - 1; y >= 0; y--) {
+				const uint8_t *r8 = uv_base + (size_t)(y / 2) * uv_stride;
+				uint16_t *r16 = (uint16_t *)(uv_base + (size_t)y * uv_stride);
 
-			for (int32_t x = (int32_t)width - 1; x >= 0; x--) {
-				r16[x] = (uint16_t)r8[x] << 8;
+				for (int32_t x = (int32_t)width - 1; x >= 0; x--) {
+					r16[x] = (uint16_t)r8[x] << 8;
+				}
+			}
+		} else {
+			for (uint32_t y = 0; y < height / 2; y++) {
+				uint8_t *r8 = uv_base + (size_t)y * uv_stride;
+				uint16_t *r16 = (uint16_t *)r8;
+
+				for (int32_t x = (int32_t)width - 1; x >= 0; x--) {
+					r16[x] = (uint16_t)r8[x] << 8;
+				}
 			}
 		}
 	}
@@ -563,13 +574,20 @@ worker(void *context)
 		s->state = CAM_STREAM_FAULTED;
 		return NULL;
 	}
+	unsigned consecutive_failures = 0;
 	isp_init(&isp);
 	while (s->state == CAM_STREAM_WARMING || s->state == CAM_STREAM_ACTIVE) {
 		if (camera_native_frame(device, &profile, buffer, bytes, &capture) < 0) {
+			if (capture.state == ANNIBALE_CAM_CAPTURE_FAILED && ++consecutive_failures <= 3) {
+				say("transient capture error (%u/3): state %u flags %#x error %u (%s)",
+				    consecutive_failures, capture.state, capture.flags, capture.error, strerror(errno));
+				continue;
+			}
 			say("capture failed: state %u flags %#x error %u (%s)", capture.state, capture.flags,
 			    capture.error, strerror(errno));
 			break;
 		}
+		consecutive_failures = 0;
 
 		const struct annibale_camera_frame *f = (const void *)buffer;
 		const uint8_t *raw = buffer + f->header_bytes;
@@ -892,8 +910,6 @@ stream_create(CFAllocatorRef allocator, const struct camera *camera, CFStringRef
 {
 	CMBaseObjectRef o = NULL;
 	struct stream *s;
-	CFDictionaryRef f[3];
-	CFIndex nf = 0;
 
 	if (derived_create(allocator, &stream_vtable, stream_class_id(), &o) != 0 || o == NULL) {
 		say("the stream cannot be made");
@@ -916,17 +932,9 @@ stream_create(CFAllocatorRef allocator, const struct camera *camera, CFStringRef
 	if (profile != NULL) {
 		s->profile = *profile;
 		s->min_fps = s->max_fps = profile->fps_milli / 1000.0;
-		uint32_t sizes[3][2] = { { profile->width, profile->height }, { 1920, 1080 }, { 1280, 720 } };
-
-		for (int i = 0; i < 3; i++) {
-			f[nf++] = native_format(profile, sizes[i][0], sizes[i][1]);
-		}
 	}
-	s->formats = CFArrayCreate(NULL, (const void **)f, nf, &kCFTypeArrayCallBacks);
+	s->formats = build_stream_formats(profile);
 	s->supported = profile != NULL ? supported(stream_props, sizeof(stream_props) / sizeof(stream_props[0])) :
 	    supported(torch_props, sizeof(torch_props) / sizeof(torch_props[0]));
-	for (CFIndex i = 0; i < nf; i++) {
-		CFRelease(f[i]);
-	}
 	return o;
 }

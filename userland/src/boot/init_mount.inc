@@ -186,19 +186,52 @@ read_whole(const char *path, char *buf, size_t size)
 }
 
 static int
+has_bootarg(const char *args, const char *wanted)
+{
+	size_t len = strlen(wanted);
+	while (*args) {
+		while (*args == ' ' || *args == '\t') args++;
+		const char *end = args;
+		while (*end && *end != ' ' && *end != '\t') end++;
+		if ((size_t)(end - args) == len && memcmp(args, wanted, len) == 0) {
+			return 1;
+		}
+		args = end;
+	}
+	return 0;
+}
+
+static int
 mount_writable(void)
 {
 	static char skeleton[16384];
 	static const char *const markers[] = { "/private/var/db/diagnostics/.migrated",
 		                               "/private/var/db/diagnostics/timesync/.migrated", "/private/var/db/uuidtext/.migrated" };
-	int ok, fd, made = 0, files = 0;
+	int ok = 0, fd, made = 0, files = 0;
 	const char *jb;
 	struct stat st;
+	char bootargs[1024];
+	size_t ba_len = sizeof(bootargs) - 1;
+	int use_apfs = 0;
 
 	printf("\n-- writable filesystem --\n");
-	ok = mount("ramfs", "/private/var", 0, NULL) == 0;
-	if (!ok) {
-		printf("  mount: %s\n", strerror(errno));
+	if (sysctlbyname("kern.bootargs", bootargs, &ba_len, NULL, 0) == 0) {
+		bootargs[ba_len < sizeof(bootargs) ? ba_len : sizeof(bootargs) - 1] = '\0';
+		use_apfs = has_bootarg(bootargs, "var_apfs=1");
+	}
+
+	if (use_apfs) {
+		ok = mount("apfs", "/private/var", 0, (void *)"/dev/disk1s2") == 0;
+		if (ok) {
+			printf("  mounted native APFS data volume on /private/var (/dev/disk1s2)\n");
+		} else {
+			printf("  native APFS candidate mount failed: %s\n", strerror(errno));
+		}
+	} else {
+		ok = mount("ramfs", "/private/var", 0, NULL) == 0;
+		if (!ok) {
+			printf("  mount: %s\n", strerror(errno));
+		}
 	}
 	check(ok, "mount the persistent data volume on /private/var");
 	if (!ok) {
@@ -391,4 +424,167 @@ restore_var(void)
 		(void)fsync(vfd);
 		close(vfd);
 	}
+}
+
+/*
+ * Mount a cryptex on /private/preboot/Cryptexes/NAME: container C (",c=N") of md0, or, when md0 has
+ * no such container (EINVAL: the RAM part of the boot is the boot volume alone), the same container
+ * of the device the iOS volume came from.  Neither: said, and a check fails.
+ */
+static void
+mount_cryptex(const char *name, const char *container, const char *flashdev)
+{
+	char at[64], spec[128], what[200];
+	struct stat st;
+	int err;
+
+	strcpy(at, join("/private/preboot/Cryptexes/", name, ""));
+	strcpy(spec, join("/dev/md0", container, ""));
+	if (mount("apfs", at, MNT_RDONLY, (void *)spec) != 0) {
+		err = errno;
+		if (err != EINVAL) {
+			printf("  the %s cryptex from %s: %s\n", name, spec, strerror(err));
+		}
+		strcpy(spec, join(flashdev, container, ""));
+		if (mount("apfs", at, MNT_RDONLY, (void *)spec) != 0) {
+			if (lstat(join("/System/Cryptexes/", name, ""), &st) == 0 &&
+			    (st.st_mode & S_IFMT) == S_IFDIR) {
+				strcpy(what, join("the ", name, " cryptex is in /System/Cryptexes"));
+				check(1, what);
+				return;
+			}
+			printf("  the %s cryptex from %s: %s\n", name, spec, strerror(errno));
+			strcpy(what, join("the ", name, " cryptex: in neither md0 nor the flash"));
+			check(0, what);
+			return;
+		}
+	}
+	strcpy(what, join("the ", name, " cryptex ("));
+	strcpy(what, join(what, spec, ") on "));
+	strcpy(what, join(what, at, ""));
+	check(1, what);
+}
+
+static int
+flash_root(const char *dev)
+{
+	static char buf[8192];
+	char devpath[96], name[256], from[800], to[400];
+	struct stat fw_st;
+	off_t pos = 0;
+	ssize_t n;
+	int fd, ok, apps = 0, bound = 0, before = failures;
+
+	printf("\n-- the iOS root volume on /dev/%s as the root --\n", dev);
+	strcpy(devpath, join("/dev/", dev, ""));
+	ok = mount("apfs", "/flash", MNT_RDONLY, devpath) == 0;
+	if (!ok) {
+		printf("  mount %s: %s\n", devpath, strerror(errno));
+	}
+	check(ok, "mount the iOS volume read only");
+	if (!ok) {
+		return 0;
+	}
+	check(mount_dir("/flash/annibale"), "prepare /annibale");
+	check(mount_dir("/flash/private/preboot"), "prepare /private/preboot");
+	static const struct { const char *from, *to; } mounts[] = {
+		{ "/LaunchDaemons", "/flash/System/Library/LaunchDaemons" },
+		{ "/empty", "/flash/System/Library/NanoLaunchDaemons" },
+		{ "/empty", "/flash/System/Library/LaunchAngels" },
+		{ "/xpc", "/flash/System/Library/xpc" },
+	};
+	for (unsigned i = 0; i < sizeof(mounts) / sizeof(mounts[0]); i++) {
+		check(mount_dir(mounts[i].to) && bind_dir(in_image(mounts[i].from), mounts[i].to), mounts[i].to);
+	}
+	static const struct { const char *from, *to, *what; } bundles[] = {
+		{ "/lib/AnnibaleAudio.driver", "/flash/System/Library/Audio/Plug-Ins/HAL/AnnibaleAudio.driver",
+		  "our audio HAL bundle in /System/Library/Audio/Plug-Ins/HAL" },
+		{ "/lib/AnnibaleMetal.bundle", "/flash/System/Library/Extensions/AnnibaleMetal.bundle",
+		  "our Metal driver bundle in /System/Library/Extensions" },
+	};
+	for (unsigned i = 0; i < sizeof(bundles) / sizeof(bundles[0]); i++) {
+		if (stat(in_image(bundles[i].from), &fw_st) == 0) {
+			check(mount_dir(bundles[i].to) && bind_dir(in_image(bundles[i].from), bundles[i].to),
+			    bundles[i].what);
+		}
+	}
+	if (stat("/fw", &fw_st) == 0 && lstat("/flash/fw", &fw_st) != 0) {
+		/* the audio DSP's firmware and the speakers' configuration, from the RAM image as in a RAM boot */
+		check(synthetic_dir("/flash/fw") && bind_dir("/fw", "/flash/fw"), "the firmware on /fw (adsp=1, sound=N)");
+	}
+	if (stat("/jb-bin", &fw_st) == 0) {
+		/*
+		 * The package manager's prefix is in the boot volume (/jb), and Sileo runs mv, cp, rm, mkdir
+		 * and chmod from /bin, where iOS has df and ps alone (userland/build.sh, SILEO_BIN): the boot
+		 * volume's jb-bin -- those five, links into the prefix -- over the volume's /bin as a union
+		 * mount, through which what it does not have is found in the /bin below.
+		 */
+		ok = mount("bindfs", "/flash/bin", MNT_RDONLY | MNT_UNION, (void *)"/jb-bin") == 0;
+		if (!ok) {
+			printf("  bindfs /jb-bin on /flash/bin, union: %s\n", strerror(errno));
+		}
+		check(ok, "Sileo's programs in /bin, over the volume's own");
+	}
+
+	fd = open("/flash/private/var/staged_system_apps", O_RDONLY | O_DIRECTORY, 0);
+	while (fd >= 0 && (n = getdirentries(fd, buf, sizeof(buf), &pos)) > 0) {
+		for (char *p = buf; p < buf + n;) {
+			struct dirent *de = (struct dirent *)(void *)p;
+			size_t len = de->d_namlen;
+
+			if (de->d_reclen == 0) {
+				break;
+			}
+			p += de->d_reclen;
+			if (len < 5 || len >= sizeof(name) || strncmp(de->d_name + len - 4, ".app", 4) != 0) {
+				continue;
+			}
+			memcpy(name, de->d_name, len);
+			name[len] = 0;
+			apps++;
+			/* another name for it in /Applications, on the same volume: no mount point to skip */
+			strcpy(to, join("/flash/Applications/", name, "="));
+			strcpy(from, join(to, "/flash/private/var/staged_system_apps/", name));
+			if (synthetic_dir(from)) {
+				bound++;
+			}
+		}
+	}
+	if (fd >= 0) {
+		close(fd);
+		printf("  %d applications waiting to be installed, %d of them in /Applications\n", apps, bound);
+		check(apps > 0 && bound == apps, "the first boot's applications in /Applications");
+	} else {
+		check(stat("/flash/Applications/Preferences.app", &fw_st) == 0,
+		    "the system applications in /Applications");
+	}
+
+	if (failures != before) {
+		return 0;
+	}
+	ok = sysctlbyname("kern.annibale_switch_root", NULL, NULL, "/flash private/preboot", 22) == 0;
+	if (!ok) {
+		printf("  switching the root: %s\n", strerror(errno));
+	}
+	check(ok, "the iOS volume is the root, the RAM part of the boot on /private/preboot");
+	if (!ok) {
+		return 0;
+	}
+	chdir("/");
+	/*
+	 * The cryptexes, where iOS grafts them: the boot volume's empty Cryptexes/OS and Cryptexes/App,
+	 * now /private/preboot/Cryptexes/OS and App, where the iOS volume's /System/Cryptexes/OS and App
+	 * point (and the kernel takes a shared cache from the first, bsd/vm/vm_unix.c).  Each from md0 when
+	 * the RAM part of the boot has it (flashboot.apfs: the second and third containers), else from
+	 * the flash -- darwin, where Apple's images lie as they are after the iOS volume (containers 1 and 2
+	 * of the root's own device).
+	 */
+	mount_cryptex("OS", ",c=1", devpath);
+	mount_cryptex("App", ",c=2", devpath);
+	check(bind_dir("/private/preboot/annibale", "/annibale"), "this image back on /annibale");
+	if (failures != before) {
+		return 0;
+	}
+	flash_root_mode = 1;
+	return 1;
 }

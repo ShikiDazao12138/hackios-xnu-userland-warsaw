@@ -150,7 +150,11 @@ find_functions(void)
 	stream_class_id = dlsym(RTLD_DEFAULT, "FigCaptureStreamGetClassID");
 	port = dlsym(RTLD_DEFAULT, "kFigCapturePortType_BackFacingCamera");
 	port_back = port != NULL ? *port : NULL;
-	port = dlsym(RTLD_DEFAULT, "kFigCapturePortType_FrontFacingCamera");
+	/* On iPhone18,3 (V57), Front Ultra Wide and Front Virtual bind PortTypeFrontSuperWide. */
+	port = dlsym(RTLD_DEFAULT, "kFigCapturePortType_FrontFacingSuperWideCamera");
+	if (port == NULL || *port == NULL) {
+		port = dlsym(RTLD_DEFAULT, "kFigCapturePortType_FrontFacingCamera");
+	}
 	port_front = port != NULL ? *port : NULL;
 	port = dlsym(RTLD_DEFAULT, "kFigCaptureSampleBufferAttachmentKey_MetadataDictionary");
 	md_attachment = port != NULL ? *port : NULL;
@@ -324,83 +328,7 @@ supported(const struct prop *p, size_t n)
 
 /* ---- the formats ----------------------------------------------------------------------------------- */
 
-#define PF_420F         0x34323066      /* '420f' */
-#define PF_420V         0x34323076      /* '420v' */
-#define PF_X420         0x78343230      /* 'x420' */
-#define PF_XF20         0x78663230      /* 'xf20' */
-#define PF_BGRA         0x42475241      /* 'BGRA' */
-#define PF_L008         0x4c303038      /* 'L008' */
-
-static CFDictionaryRef
-output_info(int width, int height, double max_fps)
-{
-	CFMutableDictionaryRef o = (CFMutableDictionaryRef)new_dict();
-	CFNumberRef pf[5] = {
-		number_i(PF_420F), number_i(PF_420V),
-		number_i(PF_X420), number_i(PF_XF20),
-		number_i(PF_BGRA)
-	};
-	CFArrayRef pfs = CFArrayCreate(NULL, (const void **)pf, 5, &kCFTypeArrayCallBacks);
-
-	for (int i = 0; i < 5; i++) {
-		CFRelease(pf[i]);
-	}
-	put(o, "SupportedPixelFormats", pfs);
-	put(o, "NativeWidth", number_i(width));
-	put(o, "NativeHeight", number_i(height));
-	put(o, "NativeWidthPostGeometricDistortionCorrection", number_i(width));
-	put(o, "NativeHeightPostGeometricDistortionCorrection", number_i(height));
-	put(o, "MaxDownscaleFactor", number_f(32));
-	put(o, "MaxScaleFactor", number_f(1));
-	put(o, "MinScaleFactor", number_f(1.0 / 32));
-	put(o, "OutputWidthAlignmentRequirement", number_i(16));
-	put(o, "MaxFrameRate", number_f(max_fps));
-	put(o, "SashimiRawPixelFormat", number_i(PF_BGRA));
-	put(o, "SushiRawPixelFormat", number_i(PF_BGRA));
-	put(o, "FocusPixelDataSupported", CFRetain(kCFBooleanFalse));
-	return o;
-}
-
-static CFDictionaryRef
-native_format(const struct annibale_camera_profile *profile, uint32_t width, uint32_t height)
-{
-	CFMutableDictionaryRef f = (CFMutableDictionaryRef)new_dict(), outputs = (CFMutableDictionaryRef)new_dict();
-	CMVideoFormatDescriptionRef fd = NULL;
-	double fps = profile->fps_milli / 1000.0;
-
-	CMVideoFormatDescriptionCreate(NULL, PF_420F, (int32_t)width, (int32_t)height, NULL, &fd);
-	if (fd != NULL) {
-		put(f, "FormatDescription", fd);
-	}
-	put(f, "VideoMinFrameRate", number_f(fps));
-	put(f, "VideoMaxFrameRate", number_f(fps));
-	put(f, "VideoRawBitDepth", number_i(10));
-	put(f, "VideoMaxWidth", number_i(width));
-	put(f, "VideoMaxHeight", number_i(height));
-	put(f, "Experimental", CFRetain(kCFBooleanFalse));
-	put(f, "SensorWidth", number_i(profile->width));
-	put(f, "SensorHeight", number_i(profile->height));
-	put(f, "SashimiRawPixelFormat", number_i(PF_BGRA));
-	put(f, "SushiRawPixelFormat", number_i(PF_BGRA));
-	put(f, "FocusPixelDataSupported", CFRetain(kCFBooleanFalse));
-	put(f, "SensorCropWidth", number_i(profile->width));
-	put(f, "SensorCropHeight", number_i(profile->height));
-	put(f, "PreGDCSensorCropWidth", number_i(profile->width));
-	put(f, "PreGDCSensorCropHeight", number_i(profile->height));
-	put(f, "PostGDCCropWidth", number_i(width));
-	put(f, "PostGDCCropHeight", number_i(height));
-	put(f, "GeometricDistortionCorrectedNativeWidth", number_i(width));
-	put(f, "GeometricDistortionCorrectedNativeHeight", number_i(height));
-	put(f, "FrontEndScalerOutputWidth", number_i(width));
-	put(f, "FrontEndScalerOutputHeight", number_i(height));
-
-	put(outputs, "PrimaryScaler", output_info((int)width, (int)height, fps));
-	put(outputs, "SecondaryScaler", output_info((int)width, (int)height, fps));
-	put(outputs, "StillImage", output_info((int)width, (int)height, fps));
-	put(outputs, "StillImageRaw", output_info((int)width, (int)height, fps));
-	put(f, "SupportedOutputs", outputs);
-	return f;
-}
+#include "camera_formats_ios26.inc"
 
 /* ---- the stream ------------------------------------------------------------------------------------- */
 

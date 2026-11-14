@@ -68,6 +68,164 @@ cmd_write(const char *path, const char *in_path, const char *at_str, const char 
 	return error == 0 ? 0 : 1;
 }
 
+int
+cmd_write_file(const char *path, const char *in_path, const char *at_str, const char *from)
+{
+	struct apfs_nx nx;
+	struct apfs_vol vol;
+	struct apfs_write_report rep;
+	uint64_t at = strtoull(at_str, NULL, 0);
+	uint8_t *data = NULL;
+	size_t len = 0, cap = 0;
+	uint64_t id = 0;
+	uint8_t type = 0;
+	FILE *f;
+	int error;
+
+	f = strcmp(from, "-") == 0 ? stdin : fopen(from, "rb");
+	if (f == NULL) {
+		perror(from);
+		return 1;
+	}
+	for (;;) {
+		size_t n;
+		if (len == cap) {
+			cap = cap ? cap * 2 : 65536;
+			data = realloc(data, cap);
+			if (data == NULL) {
+				fprintf(stderr, "apfs-tool: out of memory\n");
+				return 1;
+			}
+		}
+		n = fread(data + len, 1, cap - len, f);
+		len += n;
+		if (n == 0) break;
+	}
+	if (f != stdin) fclose(f);
+
+	want_write = true;
+	if (open_image(path, &nx, &vol) != 0) return 1;
+	if (apfs_path_lookup(&vol, in_path, &id, &type) != 0) {
+		fprintf(stderr, "apfs-tool: %s: no such path in the volume\n", in_path);
+		return 1;
+	}
+	memset(&rep, 0, sizeof(rep));
+	error = apfs_write_file(&vol, id, at, data, len, &rep);
+	printf("%s: %zu bytes at %" PRIu64 " of %s (inode %" PRIu64 "): %s\n", path, len, at,
+	    in_path, id, error == 0 ? "written" : (rep.why ? rep.why : strerror(error)));
+	apfs_nx_close(&nx);
+	free(data);
+	return error == 0 ? 0 : 1;
+}
+
+int
+cmd_create(const char *path, const char *in_path, const char *mode_str)
+{
+	struct apfs_nx nx;
+	struct apfs_vol vol;
+	uint16_t mode = mode_str ? (uint16_t)strtoul(mode_str, NULL, 8) : 0644;
+	uint64_t parent_id = APFS_ROOT_DIR_INO_NUM;
+	uint64_t new_id = 0;
+	int error;
+
+	want_write = true;
+	if (open_image(path, &nx, &vol) != 0) return 1;
+
+	char dir_path[256];
+	const char *leaf = strrchr(in_path, '/');
+	if (leaf == NULL) {
+		leaf = in_path;
+	} else if (leaf == in_path) {
+		leaf++;
+	} else {
+		size_t dlen = leaf - in_path;
+		if (dlen >= sizeof(dir_path)) {
+			apfs_nx_close(&nx);
+			return 1;
+		}
+		memcpy(dir_path, in_path, dlen);
+		dir_path[dlen] = '\0';
+		leaf++;
+		uint8_t dt = 0;
+		if (apfs_path_lookup(&vol, dir_path, &parent_id, &dt) != 0) {
+			fprintf(stderr, "apfs-tool: parent directory %s not found\n", dir_path);
+			apfs_nx_close(&nx);
+			return 1;
+		}
+	}
+
+	error = apfs_create_file(&vol, parent_id, leaf, mode | 0100000, 0, 0, &new_id);
+	printf("%s: create %s in %" PRIu64 ": %s (inode %" PRIu64 ")\n", path, leaf, parent_id,
+	    error == 0 ? "created" : strerror(error), new_id);
+	apfs_nx_close(&nx);
+	return error == 0 ? 0 : 1;
+}
+
+int
+cmd_remove(const char *path, const char *in_path)
+{
+	struct apfs_nx nx;
+	struct apfs_vol vol;
+	uint64_t parent_id = APFS_ROOT_DIR_INO_NUM;
+	int error;
+
+	want_write = true;
+	if (open_image(path, &nx, &vol) != 0) return 1;
+
+	char dir_path[256];
+	const char *leaf = strrchr(in_path, '/');
+	if (leaf == NULL) {
+		leaf = in_path;
+	} else if (leaf == in_path) {
+		leaf++;
+	} else {
+		size_t dlen = leaf - in_path;
+		if (dlen >= sizeof(dir_path)) {
+			apfs_nx_close(&nx);
+			return 1;
+		}
+		memcpy(dir_path, in_path, dlen);
+		dir_path[dlen] = '\0';
+		leaf++;
+		uint8_t dt = 0;
+		if (apfs_path_lookup(&vol, dir_path, &parent_id, &dt) != 0) {
+			fprintf(stderr, "apfs-tool: parent directory %s not found\n", dir_path);
+			apfs_nx_close(&nx);
+			return 1;
+		}
+	}
+
+	error = apfs_remove_file(&vol, parent_id, leaf);
+	printf("%s: remove %s from %" PRIu64 ": %s\n", path, leaf, parent_id,
+	    error == 0 ? "removed" : strerror(error));
+	apfs_nx_close(&nx);
+	return error == 0 ? 0 : 1;
+}
+
+int
+cmd_setsize(const char *path, const char *in_path, const char *size_str)
+{
+	struct apfs_nx nx;
+	struct apfs_vol vol;
+	uint64_t new_size = strtoull(size_str, NULL, 0);
+	uint64_t id = 0;
+	uint8_t type = 0;
+	int error;
+
+	want_write = true;
+	if (open_image(path, &nx, &vol) != 0) return 1;
+	if (apfs_path_lookup(&vol, in_path, &id, &type) != 0) {
+		fprintf(stderr, "apfs-tool: %s: no such path in the volume\n", in_path);
+		return 1;
+	}
+
+	error = apfs_set_file_size(&vol, id, new_size);
+	printf("%s: setsize %s (inode %" PRIu64 ") to %" PRIu64 ": %s\n", path, in_path, id, new_size,
+	    error == 0 ? "success" : strerror(error));
+	apfs_nx_close(&nx);
+	return error == 0 ? 0 : 1;
+}
+
 /* Would this volume take a write at all, and what does it say about itself? */
 int
 cmd_writable(const char *path)

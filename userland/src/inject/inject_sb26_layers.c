@@ -774,11 +774,13 @@ install_poster_dump(void)
     to_say = 1;
     sb26_install_layer_dump();
     out("sb26 layers: dump installed in %s\n", getprogname());
-    for (int64_t seconds = 40; seconds <= 160; seconds += 120) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, seconds * (int64_t)NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            static dispatch_once_t once;
-            dispatch_once_f(&once, NULL, resolve);
-            dump(NULL, 0);
-        });
+    if (getenv("ANNIBALE_POSTER_AUTO_DUMP") != NULL) {
+        for (int64_t seconds = 40; seconds <= 160; seconds += 120) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, seconds * (int64_t)NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                static dispatch_once_t once;
+                dispatch_once_f(&once, NULL, resolve);
+                dump(NULL, 0);
+            });
+        }
     }
 }

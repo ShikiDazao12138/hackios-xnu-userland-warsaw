@@ -39,4 +39,5 @@ for f in "$HERE"/*.c "$HERE"/apfs_tool.h "$HERE"/build-tool.sh \
 done
 [ -z "$stale" ] || "$HERE/build-tool.sh" "$TOOL" > /dev/null
 
+export PATH="$ROOT/xnu-deps/build/bin:$PATH"
 exec python3 "$HERE/write-tests.py" "$@"

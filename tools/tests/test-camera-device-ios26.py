@@ -27,7 +27,8 @@ HARNESS = r"""
 
 /* Stub dlopen/dlsym for CMCaptureCore / CMCaptureDevice symbols on macOS host */
 static CFStringRef k_back = CFSTR("PortTypeBackFacingCamera");
-static CFStringRef k_front = CFSTR("PortTypeFrontFacingCamera");
+static CFStringRef k_front = CFSTR("PortTypeFrontSuperWide");
+static CFStringRef k_front_legacy = CFSTR("PortTypeFrontFacingCamera");
 static CFStringRef k_md_dict = CFSTR("MetadataDictionary");
 static struct { const char *symbol; CFStringRef value; } metadata_symbols[] = {
     { "kFigCaptureStreamMetadata_PortType", CFSTR("PortType") },
@@ -47,7 +48,7 @@ static struct annibale_camera_capture next_capture;
 static struct annibale_camera_frame next_frame;
 static size_t profile_offset;
 static int profile_present = 1, native_capable = 1, device_open, installed;
-static int profile_eintr, short_install, short_frame, capture_errno, hold_after_capture;
+static int profile_eintr, short_install, short_frame, capture_errno, hold_after_capture, transient_fail_remaining;
 static unsigned install_calls, capture_calls, pixel_reads;
 static int torch_present, torch_open, short_torch_read, short_torch_write, fail_stream_create;
 static uint32_t torch_shown = 173, torch_wanted;
@@ -163,6 +164,14 @@ static int fake_ioctl(int fd, unsigned long request, ...) {
     assert(request == CAMIOC_CAPTURE && installed);
     capture_calls++;
     if (capture_errno) { errno = capture_errno; return -1; }
+    if (transient_fail_remaining > 0) {
+        transient_fail_remaining--;
+        struct annibale_camera_capture failed = next_capture;
+        failed.state = ANNIBALE_CAM_CAPTURE_FAILED;
+        failed.error = EIO;
+        memcpy(out, &failed, sizeof(failed));
+        return 0;
+    }
     memcpy(out, &next_capture, sizeof(next_capture));
     if (hold_after_capture) next_capture.state = ANNIBALE_CAM_CAPTURE_HELD;
     return 0;
@@ -200,7 +209,8 @@ static void *fake_dlsym(void *handle, const char *symbol) {
     if (strcmp(symbol, "FigCaptureDeviceGetClassID") == 0) return (void *)fake_device_class_id;
     if (strcmp(symbol, "FigCaptureStreamGetClassID") == 0) return (void *)fake_stream_class_id;
     if (strcmp(symbol, "kFigCapturePortType_BackFacingCamera") == 0) return &k_back;
-    if (strcmp(symbol, "kFigCapturePortType_FrontFacingCamera") == 0) return &k_front;
+    if (strcmp(symbol, "kFigCapturePortType_FrontFacingSuperWideCamera") == 0) return &k_front;
+    if (strcmp(symbol, "kFigCapturePortType_FrontFacingCamera") == 0) return &k_front_legacy;
     if (strcmp(symbol, "kFigCaptureSampleBufferAttachmentKey_MetadataDictionary") == 0) return &k_md_dict;
     for (size_t i = 0; i < sizeof(metadata_symbols) / sizeof(metadata_symbols[0]); i++)
         if (strcmp(symbol, metadata_symbols[i].symbol) == 0) return &metadata_symbols[i].value;
@@ -407,6 +417,17 @@ static void native_boundaries(CMBaseObjectRef front) {
     assert(worker(front) == NULL);
     assert(capture_calls == captures + 1 && pixel_reads == reads && !device_open);
     assert(stream_of(front)->state == CAM_STREAM_FAULTED);
+
+    /* 4 consecutive recoverable FAILED frames exceed the 3-retry cap without reading pixels */
+    complete_capture();
+    transient_fail_remaining = 4;
+    captures = capture_calls;
+    reads = pixel_reads;
+    stream_of(front)->state = CAM_STREAM_ACTIVE;
+    assert(worker(front) == NULL);
+    assert(capture_calls == captures + 4 && pixel_reads == reads && !device_open);
+    assert(stream_of(front)->state == CAM_STREAM_FAULTED);
+    transient_fail_remaining = 0;
     free(buffer);
 }
 
@@ -473,14 +494,109 @@ static void pixel_buffer_consumer(CMBaseObjectRef front) {
     assert(stream_set_property(front, CFSTR("VideoOutputHandlers"), handlers) == 0);
     CFRelease(handlers);
     complete_capture();
+    transient_fail_remaining = 2;
     hold_after_capture = 1;
     unsigned captures = capture_calls, reads = pixel_reads;
     stream_of(front)->state = CAM_STREAM_ACTIVE;
     assert(worker(front) == NULL);
-    assert(callbacks == 1 && capture_calls == captures + 2 && pixel_reads == reads + 1);
+    assert(callbacks == 1 && capture_calls == captures + 4 && pixel_reads == reads + 1);
     assert(stream_of(front)->frames == 1 && stream_of(front)->state == CAM_STREAM_FAULTED);
     hold_after_capture = 0;
     assert(stream_stop(front) == 0);
+
+    /* Verify PF_X422 10-bit 4:2:2 biplanar delivery (put() already transferred ownership of pool) */
+    pool = NULL;
+    attributes = (CFMutableDictionaryRef)new_dict();
+    put(attributes, "Width", number_i(640));
+    put(attributes, "Height", number_i(480));
+    put(attributes, "PixelFormatType", number_i(PF_X422));
+    put(attributes, "IOSurfaceProperties", new_dict());
+    assert(CVPixelBufferPoolCreate(NULL, NULL, attributes, &pool) == kCVReturnSuccess);
+    CFRelease(attributes);
+    configs = (CFMutableDictionaryRef)new_dict();
+    primary = (CFMutableDictionaryRef)new_dict();
+    put(primary, "BufferPool", pool);
+    put(configs, "PrimaryScaler", primary);
+    assert(stream_set_property(front, CFSTR("VideoOutputConfigurations"), configs) == 0);
+    CFRelease(configs);
+    __block unsigned x422_callbacks = 0;
+    pixel_buffer_handler x422_handler = Block_copy(^(CVPixelBufferRef image, CMTime pts) {
+        (void)pts;
+        assert(CVPixelBufferGetPixelFormatType(image) == PF_X422);
+        assert(CVPixelBufferGetWidthOfPlane(image, 1) == 320 && CVPixelBufferGetHeightOfPlane(image, 1) == 480);
+        assert(CVPixelBufferLockBaseAddress(image, 0) == kCVReturnSuccess);
+        const uint16_t *y16 = CVPixelBufferGetBaseAddressOfPlane(image, 0);
+        const uint16_t *uv16 = CVPixelBufferGetBaseAddressOfPlane(image, 1);
+        size_t uv_stride16 = CVPixelBufferGetBytesPerRowOfPlane(image, 1) / sizeof(uint16_t);
+        assert((y16[0] & 0xff) == 0 && y16[0] > 0);
+        assert(uv16[0] == uv16[uv_stride16] && (uv16[0] & 0xff) == 0);
+        CVPixelBufferUnlockBaseAddress(image, 0);
+        x422_callbacks++;
+    });
+    handlers = (CFMutableDictionaryRef)new_dict();
+    entry = (CFMutableDictionaryRef)new_dict();
+    put(entry, "PixelBufferHandler", x422_handler);
+    put(handlers, "PrimaryScaler", entry);
+    assert(stream_set_property(front, CFSTR("VideoOutputHandlers"), handlers) == 0);
+    CFRelease(handlers);
+    complete_capture();
+    hold_after_capture = 1;
+    stream_of(front)->state = CAM_STREAM_ACTIVE;
+    assert(worker(front) == NULL);
+    assert(x422_callbacks == 1);
+    hold_after_capture = 0;
+    assert(stream_stop(front) == 0);
+}
+
+static bool get_bool_opt(CFDictionaryRef d, CFStringRef k) {
+    CFTypeRef v = CFDictionaryGetValue(d, k);
+    if (v == NULL) return false;
+    if (CFGetTypeID(v) == CFBooleanGetTypeID()) return CFBooleanGetValue(v);
+    if (CFGetTypeID(v) == CFNumberGetTypeID()) {
+        int64_t n = 0;
+        CFNumberGetValue(v, kCFNumberSInt64Type, &n);
+        return n != 0;
+    }
+    return false;
+}
+
+static int64_t get_int_opt(CFDictionaryRef d, CFStringRef k) {
+    CFTypeRef v = CFDictionaryGetValue(d, k);
+    int64_t n = 0;
+    if (v != NULL && CFGetTypeID(v) == CFNumberGetTypeID())
+        CFNumberGetValue(v, kCFNumberSInt64Type, &n);
+    return n;
+}
+
+/* Exact CMCapture csu_resolveFormatIndexForNamedStreamFormat predicate */
+static CFIndex resolve_v57_spec(CFArrayRef formats, const struct ios26_stream_format_spec *sp) {
+    for (CFIndex i = 0; i < CFArrayGetCount(formats); i++) {
+        CFDictionaryRef f = CFArrayGetValueAtIndex(formats, i);
+        if (get_bool_opt(f, CFSTR("Experimental"))) continue;
+        if (get_int_opt(f, CFSTR("SensorWidth")) != sp->sensor_w ||
+            get_int_opt(f, CFSTR("SensorHeight")) != sp->sensor_h) continue;
+        if (get_bool_opt(f, CFSTR("VideoIsBinned")) != (sp->binned != 0)) continue;
+        if ((get_int_opt(f, CFSTR("SensorHDRMode")) > 0) != (sp->hdr != 0)) continue;
+        int64_t fw = get_int_opt(f, CFSTR("FrontEndScalerOutputWidth"));
+        int64_t fh = get_int_opt(f, CFSTR("FrontEndScalerOutputHeight"));
+        bool has_fes = fw > 0 && fh > 0;
+        if (has_fes != (sp->fes != 0)) continue;
+        if (sp->fes && (fw != sp->fes_w || fh != sp->fes_h)) continue;
+        int64_t fq = get_int_opt(f, CFSTR("QuadraBinningFactor"));
+        int64_t eq = sp->quadra != 0 && fq == 0 ? 2 : sp->quadra;
+        if (fq != eq) continue;
+        bool fsifr = get_bool_opt(f, CFSTR("SIFREnabled"));
+        if (fsifr != (sp->sifr != 0)) continue;
+        if (sp->sifr) {
+            int64_t fb = get_int_opt(f, CFSTR("SIFRBinningFactor"));
+            if (fb <= 1) fb = 1;
+            if (fb != sp->sifr_bin) continue;
+        }
+        if (get_bool_opt(f, CFSTR("OptimizedForMidFrameSynchronization")) != (sp->midframe != 0)) continue;
+        if (sp->max_fps >= 1 && get_int_opt(f, CFSTR("VideoMaxFrameRate")) != sp->max_fps) continue;
+        return i;
+    }
+    return -1;
 }
 
 int main(void) {
@@ -526,7 +642,7 @@ int main(void) {
     /* Stage 1: configure: */
     CFArrayRef formats = NULL;
     assert(stream_copy_property(front, CFSTR("SupportedFormatsArray"), kCFAllocatorDefault, &formats) == 0);
-    assert(CFArrayGetCount(formats) == 3);
+    assert(CFArrayGetCount(formats) == 3 + (CFIndex)(sizeof(v57_front_specs) / sizeof(v57_front_specs[0])));
     const int widths[3] = { 2592, 1920, 1280 }, heights[3] = { 1458, 1080, 720 };
     for (int i = 0; i < 3; i++) {
         CFDictionaryRef format = CFArrayGetValueAtIndex(formats, i);
@@ -538,15 +654,30 @@ int main(void) {
         CFDictionaryRef outputs = CFDictionaryGetValue(format, CFSTR("SupportedOutputs"));
         CFDictionaryRef primary = CFDictionaryGetValue(outputs, CFSTR("PrimaryScaler"));
         CFArrayRef pixel_formats = CFDictionaryGetValue(primary, CFSTR("SupportedPixelFormats"));
-        assert(CFArrayGetCount(pixel_formats) == 5);
+        assert(CFArrayGetCount(pixel_formats) == 6);
         for (CFIndex p = 0; p < CFArrayGetCount(pixel_formats); p++) {
             int64_t pixel_format = 0;
             assert(CFNumberGetValue(CFArrayGetValueAtIndex(pixel_formats, p), kCFNumberSInt64Type, &pixel_format));
             assert(pixel_format == PF_420F || pixel_format == PF_420V || pixel_format == PF_X420 ||
-                pixel_format == PF_XF20 || pixel_format == PF_BGRA);
+                pixel_format == PF_X422 || pixel_format == PF_XF20 || pixel_format == PF_BGRA);
         }
     }
+    for (size_t i = 0; i < sizeof(v57_front_specs) / sizeof(v57_front_specs[0]); i++) {
+        assert(resolve_v57_spec(formats, &v57_front_specs[i]) >= 3);
+    }
     CFRelease(formats);
+
+    struct annibale_camera_profile back_profile = fixture;
+    back_profile.sensor = 1;
+    back_profile.mode = 24;
+    back_profile.width = 2560;
+    back_profile.height = 1920;
+    CFArrayRef back_formats = build_stream_formats(&back_profile);
+    assert(CFArrayGetCount(back_formats) == 3 + (CFIndex)(sizeof(v57_back_specs) / sizeof(v57_back_specs[0])));
+    for (size_t i = 0; i < sizeof(v57_back_specs) / sizeof(v57_back_specs[0]); i++) {
+        assert(resolve_v57_spec(back_formats, &v57_back_specs[i]) >= 3);
+    }
+    CFRelease(back_formats);
 
     CFNumberRef fmt1 = number_i(1);
     assert(stream_set_property(front, CFSTR("FormatIndex"), fmt1) == 0);

@@ -79,6 +79,18 @@ main(int argc, char **argv)
 	if (strcmp(argv[1], "write") == 0 && argc > 5) {
 		return cmd_write(argv[2], argv[3], argv[4], argv[5]);
 	}
+	if (strcmp(argv[1], "write-file") == 0 && argc > 5) {
+		return cmd_write_file(argv[2], argv[3], argv[4], argv[5]);
+	}
+	if (strcmp(argv[1], "create") == 0 && argc > 3) {
+		return cmd_create(argv[2], argv[3], argc > 4 ? argv[4] : NULL);
+	}
+	if (strcmp(argv[1], "remove") == 0 && argc > 3) {
+		return cmd_remove(argv[2], argv[3]);
+	}
+	if (strcmp(argv[1], "setsize") == 0 && argc > 4) {
+		return cmd_setsize(argv[2], argv[3], argv[4]);
+	}
 	if (strcmp(argv[1], "writable") == 0) {
 		return cmd_writable(argv[2]);
 	}

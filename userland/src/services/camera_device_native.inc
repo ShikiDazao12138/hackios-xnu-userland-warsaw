@@ -3,7 +3,7 @@
 #include <sys/stat.h>
 
 #define CAMERA_FRONT_PROFILE "/annibale/fw/camera-ov20b-front-mode4.tab"
-#define CAMERA_PROFILE_BYTES 6440u
+#define CAMERA_BACK_PROFILE "/annibale/fw/camera-ovx8000-wide-mode24.tab"
 
 /* close() releases the installed profile, so every device session installs it once. */
 static int
@@ -11,30 +11,34 @@ camera_native_open(uint32_t sensor, struct annibale_camera_profile *profile)
 {
 	struct {
 		struct annibale_camera_command command;
-		uint8_t bytes[CAMERA_PROFILE_BYTES];
-	} packet = { .command = { .command = ANNIBALE_CAMERA_PROFILE, .bytes = CAMERA_PROFILE_BYTES } };
+		uint8_t bytes[ANNIBALE_CAMERA_BACK_PROFILE_BYTES];
+	} packet = { .command = { .command = ANNIBALE_CAMERA_PROFILE } };
 	struct annibale_camera_info info;
 	struct stat st;
 	int source = -1, device = -1, error;
 	size_t offset = 0;
 
-	if (sensor != 2) {
+	if (sensor != 1 && sensor != 2) {
 		errno = ENOTSUP;
 		return -1;
 	}
-	source = open(CAMERA_FRONT_PROFILE, O_RDONLY);
+	uint32_t profile_bytes = sensor == 1 ? ANNIBALE_CAMERA_BACK_PROFILE_BYTES : ANNIBALE_CAMERA_FRONT_PROFILE_BYTES;
+	uint32_t mode = sensor == 1 ? 24u : 4u;
+	uint32_t capability = sensor == 1 ? ANNIBALE_CAM_INFO_FLAG_BACK_MODE24 : ANNIBALE_CAM_INFO_FLAG_FRONT_MODE4;
+	packet.command.bytes = profile_bytes;
+	source = open(sensor == 1 ? CAMERA_BACK_PROFILE : CAMERA_FRONT_PROFILE, O_RDONLY);
 	if (source < 0) {
 		return -1;
 	}
 	if (fstat(source, &st) != 0) {
 		goto fail;
 	}
-	if (st.st_size != CAMERA_PROFILE_BYTES) {
+	if (st.st_size != profile_bytes) {
 		errno = EINVAL;
 		goto fail;
 	}
-	while (offset < sizeof(packet.bytes)) {
-		ssize_t n = read(source, packet.bytes + offset, sizeof(packet.bytes) - offset);
+	while (offset < profile_bytes) {
+		ssize_t n = read(source, packet.bytes + offset, profile_bytes - offset);
 
 		if (n < 0 && errno == EINTR) {
 			continue;
@@ -49,7 +53,7 @@ camera_native_open(uint32_t sensor, struct annibale_camera_profile *profile)
 	source = -1;
 	memcpy(profile, packet.bytes, sizeof(*profile));
 	if (memcmp(profile->magic, ANNIBALE_CAMERA_PROFILE_MAGIC, sizeof(profile->magic)) != 0 ||
-	    profile->bytes != CAMERA_PROFILE_BYTES || profile->sensor != sensor || profile->mode != 4) {
+	    profile->bytes != profile_bytes || profile->sensor != sensor || profile->mode != mode) {
 		errno = EINVAL;
 		goto fail;
 	}
@@ -57,12 +61,13 @@ camera_native_open(uint32_t sensor, struct annibale_camera_profile *profile)
 	if (device < 0 || ioctl(device, CAMIOC_G_INFO, &info) != 0) {
 		goto fail;
 	}
-	if ((info.flags & ANNIBALE_CAM_INFO_FLAG_FRONT_MODE4) == 0) {
+	if ((info.flags & capability) == 0) {
 		errno = ENOTSUP;
 		goto fail;
 	}
-	ssize_t written = write(device, &packet, sizeof(packet));
-	if (written != (ssize_t)sizeof(packet)) {
+	size_t packet_bytes = sizeof(packet.command) + profile_bytes;
+	ssize_t written = write(device, &packet, packet_bytes);
+	if (written != (ssize_t)packet_bytes) {
 		if (written >= 0) errno = EIO;
 		goto fail;
 	}

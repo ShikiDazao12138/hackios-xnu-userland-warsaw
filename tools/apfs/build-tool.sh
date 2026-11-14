@@ -12,7 +12,7 @@ ROOT=$(cd "$HERE/../.." && pwd)
 OUT=${1:-$ROOT/apfs-work/apfs-tool}
 
 SRC=""
-for d in "$ROOT/../hackios-xnu-kernel/xnu-src/xnu-12377.121.6/bsd/miscfs/apfs" "$ROOT/../hackios-xnu-kernel/xnu/files/bsd/miscfs/apfs" "$ROOT/xnu-src/xnu-12377.121.6/bsd/miscfs/apfs" "$ROOT/xnu/files/bsd/miscfs/apfs"; do
+for d in "$ROOT/../hackios-xnu-kernel/xnu/files/bsd/miscfs/apfs" "$ROOT/xnu/files/bsd/miscfs/apfs"; do
 	[ -f "$d/apfs_lib.c" ] && { SRC=$d; break; }
 done
 [ -n "$SRC" ] || { echo "build-tool.sh: apfs_lib.c is in neither the kernel tree nor xnu/files" >&2; exit 1; }
@@ -36,6 +36,9 @@ cc -std=c11 -O2 -Wall -Wextra -Wno-sign-compare -Wno-unused-parameter $TOOL_CFLA
 # with the kernel's own code for that, bsd/vfs/vfs_unicode.c, when the kernel tree is here.
 UNI=""
 XNUBSD=$(cd "$SRC/../.." && pwd)
+if [ ! -f "$XNUBSD/vfs/vfs_unicode.c" ]; then
+	XNUBSD="$ROOT/../hackios-xnu-kernel/xnu-src/xnu-12377.121.6/bsd"
+fi
 if [ -f "$XNUBSD/vfs/vfs_unicode.c" ] && [ -f "$XNUBSD/sys/unicode.h" ]; then
 	mkdir -p "$OBJ/inc/sys" "$OBJ/inc/libkern"
 	cp "$XNUBSD/sys/unicode.h" "$OBJ/inc/sys/unicode.h"

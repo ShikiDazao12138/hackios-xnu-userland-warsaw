@@ -124,7 +124,10 @@ def read_tool_bytes(image, path):
 
 
 def read_7z_bytes(image, path):
-    p = subprocess.run(['7z', 'x', '-so', image, path.lstrip('/')], stdout=subprocess.PIPE,
+    seven_z = shutil.which('7z') or shutil.which('7zz')
+    if not seven_z:
+        return None
+    p = subprocess.run([seven_z, 'x', '-so', image, path.lstrip('/')], stdout=subprocess.PIPE,
                        stderr=subprocess.DEVNULL)
     return None if p.returncode != 0 else p.stdout
 
@@ -894,10 +897,85 @@ def test_transaction():
     say(good, 'twenty transactions one after another, each one clean: both rings go round')
 
 
+def test_m2_ops():
+    """Milestone 2 native write operations: file growth, creation, removal, and sizing."""
+    base, img = fresh('m2-ops')
+
+    # 1. File growth / extent allocation via Space Manager
+    grow_data = b'EXTENDED_DATA_BEYOND_OLD_EOF_' * 20
+    rc, out = run(TOOL, 'write-file', img, '/small', '5000', '-', input=grow_data)
+    say(rc == 0, 'write-file beyond EOF to /small at 5000: allocated blocks and committed')
+    ok, ck = read_apfsck(img)
+    say(ok, '  apfsck finds container consistent after file growth' + ('' if ok else ':\n' + ck))
+    data_read = read_tool_bytes(img, '/small')
+    say(data_read is not None and data_read[5000:5000 + len(grow_data)] == grow_data,
+        '  apfs-tool cat reads back extended file content accurately')
+
+    # 2. File creation & writing
+    rc, out = run(TOOL, 'create', img, '/m2_test.txt', '0644')
+    say(rc == 0, 'create new file /m2_test.txt')
+    new_data = b'Native APFS write support on HackiOS M2!\n' * 50
+    rc, out = run(TOOL, 'write-file', img, '/m2_test.txt', '0', '-', input=new_data)
+    say(rc == 0, 'write to newly created file /m2_test.txt')
+    ok, ck = read_apfsck(img)
+    say(ok, '  apfsck finds container consistent after file creation' + ('' if ok else ':\n' + ck))
+    read_back = read_tool_bytes(img, '/m2_test.txt')
+    say(read_back == new_data, '  read back matches written bytes for /m2_test.txt')
+
+    # 3. Truncate / Set Size
+    rc, out = run(TOOL, 'setsize', img, '/m2_test.txt', '128')
+    say(rc == 0, 'setsize /m2_test.txt to 128 bytes')
+    ok, ck = read_apfsck(img)
+    say(ok, '  apfsck finds container consistent after setsize' + ('' if ok else ':\n' + ck))
+    read_trunc = read_tool_bytes(img, '/m2_test.txt')
+    say(read_trunc == new_data[:128], '  read back reflects truncated size (128 bytes)')
+
+    # Truncate to 0 (ftruncate(0))
+    rc, out = run(TOOL, 'setsize', img, '/m2_test.txt', '0')
+    say(rc == 0, 'setsize /m2_test.txt to 0 bytes')
+    ok, ck = read_apfsck(img)
+    say(ok, '  apfsck finds container consistent after setsize 0' + ('' if ok else ':\n' + ck))
+    read_zero = read_tool_bytes(img, '/m2_test.txt')
+    say(read_zero == b'', '  read back reflects 0 bytes')
+
+    # Multi-block allocation and extent freeing
+    multi_data = b'M' * (5 * BS)
+    rc, out = run(TOOL, 'write-file', img, '/m2_test.txt', '0', '-', input=multi_data)
+    say(rc == 0, 'write 5 blocks to /m2_test.txt')
+    ok, ck = read_apfsck(img)
+    say(ok, '  apfsck finds container consistent after multi-block write' + ('' if ok else ':\n' + ck))
+
+    # 4. Remove file
+    rc, out = run(TOOL, 'remove', img, '/m2_test.txt')
+    say(rc == 0, 'remove /m2_test.txt')
+    ok, ck = read_apfsck(img)
+    say(ok, '  apfsck finds container consistent after remove' + ('' if ok else ':\n' + ck))
+    rc_stat, _ = run(TOOL, 'stat', img, '/m2_test.txt')
+    say(rc_stat != 0, '  removed file is no longer accessible via stat')
+
+    # 5. Long filenames in a split B-tree (verifying btree_info footer max key/val sizes)
+    for i in range(35):
+        rc, _ = run(TOOL, 'create', img, f'/split_{i:02d}.txt', '0644')
+        assert rc == 0
+    ok, ck = read_apfsck(img)
+    say(ok, '  apfsck finds container consistent after splitting btree' + ('' if ok else ':\n' + ck))
+    name_50 = 'long_filename_exceeding_previous_max_key_50_bytes'
+    rc, _ = run(TOOL, 'create', img, '/' + name_50, '0644')
+    say(rc == 0, 'create 50-byte filename in split btree')
+    ok, ck = read_apfsck(img)
+    say(ok, '  apfsck finds container consistent after 50-byte name in split tree' + ('' if ok else ':\n' + ck))
+    name_255 = 'x' * 255
+    rc, _ = run(TOOL, 'create', img, '/' + name_255, '0644')
+    say(rc == 0, 'create 255-byte (NAME_MAX) filename in split btree')
+    ok, ck = read_apfsck(img)
+    say(ok, '  apfsck finds container consistent after 255-byte name in split tree' + ('' if ok else ':\n' + ck))
+
+
 TESTS = {
     'baseline': test_baseline,
     'transaction': test_transaction,
     'writes': test_writes,
+    'm2-ops': test_m2_ops,
     'refusals': test_refusals,
     'volume-gates': test_volume_gates,
     'extent-gates': test_extent_gates,

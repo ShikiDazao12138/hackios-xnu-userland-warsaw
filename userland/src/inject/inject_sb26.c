@@ -322,6 +322,19 @@ dir_contains_localization_file(const char *dirpath)
     return found;
 }
 
+static uint64_t s_loc_cache[256];
+
+static uint64_t
+fnv1a64_str(const char *s)
+{
+    uint64_t h = 14695981039346656037ULL;
+    for (; *s; s++) {
+        h ^= (uint8_t)*s;
+        h *= 1099511628211ULL;
+    }
+    return h ? h : 1ULL;
+}
+
 static int
 bundle_has_localization_resources(CFBundleRef bundle)
 {
@@ -332,10 +345,19 @@ bundle_has_localization_resources(CFBundleRef bundle)
     Boolean ok = CFURLGetFileSystemRepresentation(url, true, (UInt8 *)path, sizeof(path));
     CFRelease(url);
     if (!ok) return 1;
-    if (dir_contains_localization_file(path)) return 1;
-    if (snprintf(sub, sizeof(sub), "%s/Resources", path) > 0 && dir_contains_localization_file(sub)) return 1;
-    if (snprintf(sub, sizeof(sub), "%s/Contents/Resources", path) > 0 && dir_contains_localization_file(sub)) return 1;
-    return 0;
+    uint64_t tag = fnv1a64_str(path) & ~3ULL;
+    if (tag == 0) tag = 4ULL;
+    unsigned slot = (unsigned)((tag >> 2) & 255U);
+    uint64_t cached = __atomic_load_n(&s_loc_cache[slot], __ATOMIC_RELAXED);
+    if ((cached & ~3ULL) == tag && (cached & 3ULL) != 0) {
+        return (cached & 3ULL) == 2ULL;
+    }
+    int found = 0;
+    if (dir_contains_localization_file(path)) found = 1;
+    else if (snprintf(sub, sizeof(sub), "%s/Resources", path) > 0 && dir_contains_localization_file(sub)) found = 1;
+    else if (snprintf(sub, sizeof(sub), "%s/Contents/Resources", path) > 0 && dir_contains_localization_file(sub)) found = 1;
+    __atomic_store_n(&s_loc_cache[slot], tag | (found ? 2ULL : 1ULL), __ATOMIC_RELAXED);
+    return found;
 }
 
 static CFArrayRef
