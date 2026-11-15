@@ -31,12 +31,60 @@ rwa_buffer_fill(struct rwa_buffer *dst, size_t offset, size_t size, uint8_t valu
    pipe->clear_buffer(pipe, dst->res, (unsigned)offset, (unsigned)size, &value, 1);
    if (finish_or_say_why(device, true, "buffer fill", why, why_size)) return -1;
    if (dst->mirror) {
-      memcpy((char *)dst->mirror + offset, (char *)dst->map + offset, size);
+      memset((char *)dst->mirror + offset, value, size);
       dst->mirror_hashed = false;
       buffer_mirror_pull(dst);
    }
    for (struct rwa_buffer_texture *b = device->buffer_textures; b; b = b->next)
       if (b->source == dst && buffer_texture_upload(b, why, why_size)) return -1;
+   return 0;
+}
+
+int
+rwa_buffer_fill_nowait(struct rwa_buffer *dst, size_t offset, size_t size, uint8_t value,
+                       char *why, size_t why_size)
+{
+   RWA_LOCKED;
+   if (!dst || !dst->res || dst->res->target != PIPE_BUFFER ||
+       offset > dst->size || size > dst->size - offset || offset > UINT_MAX || size > UINT_MAX) {
+      say(why, why_size, "buffer fill range is out of bounds");
+      return -1;
+   }
+   if (dst->encodings) {
+      say(why, why_size, "filling buffers with argument-buffer encodings is unsupported");
+      return -1;
+   }
+   if (!size) return 0;
+   struct rwa_device *device = dst->device;
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe->clear_buffer) {
+      say(why, why_size, "the driver has no buffer fill operation");
+      return -1;
+   }
+   buffer_mirror_pull(dst);
+   for (struct rwa_buffer_texture *b = device->buffer_textures; b; b = b->next)
+      if (b->source == dst && b->written && buffer_texture_download(b, why, why_size))
+         return -1;
+   pipe->clear_buffer(pipe, dst->res, (unsigned)offset, (unsigned)size, &value, 1);
+   if (dst->mirror) {
+      memset((char *)dst->mirror + offset, value, size);
+      dst->mirror_hashed = false;
+      buffer_mirror_pull(dst);
+   }
+   bool has_buf_tex = false;
+   for (struct rwa_buffer_texture *b = device->buffer_textures; b; b = b->next) {
+      if (b->source == dst) {
+         has_buf_tex = true;
+         break;
+      }
+   }
+   if (has_buf_tex) {
+      if (finish_or_say_why(device, true, "buffer fill nowait", why, why_size))
+         return -1;
+      for (struct rwa_buffer_texture *b = device->buffer_textures; b; b = b->next)
+         if (b->source == dst && buffer_texture_upload(b, why, why_size))
+            return -1;
+   }
    return 0;
 }
 
@@ -74,6 +122,57 @@ rwa_buffer_copy(struct rwa_buffer *src, size_t src_offset,
    struct pipe_box box = { .x = src_offset, .width = size, .height = 1, .depth = 1 };
    pipe->resource_copy_region(pipe, dst->res, 0, dst_offset, 0, 0, src->res, 0, &box);
    return finish_or_say_why(src->device, true, "buffer copy", why, why_size);
+}
+
+int
+rwa_buffer_copy_nowait(struct rwa_buffer *src, size_t src_offset,
+                       struct rwa_buffer *dst, size_t dst_offset, size_t size,
+                       char *why, size_t why_size)
+{
+   RWA_LOCKED;
+   if (!src || !dst || src->device != dst->device) {
+      say(why, why_size, "buffer copy requires two buffers from one device");
+      return -1;
+   }
+   if (!size || src_offset > src->size || size > src->size - src_offset ||
+       dst_offset > dst->size || size > dst->size - dst_offset ||
+       src_offset > INT32_MAX || dst_offset > INT32_MAX ||
+       size > (size_t)INT32_MAX - src_offset || size > (size_t)INT32_MAX - dst_offset) {
+      say(why, why_size, "buffer copy range is empty, out of bounds or exceeds Gallium's signed coordinates");
+      return -1;
+   }
+   if (src->encodings || dst->encodings) {
+      say(why, why_size, "copying buffers with argument-buffer encodings is unsupported");
+      return -1;
+   }
+   if (src->res == dst->res &&
+       src_offset < dst_offset + size && dst_offset < src_offset + size) {
+      say(why, why_size, "overlapping buffer copy ranges are unsupported");
+      return -1;
+   }
+   struct pipe_context *pipe = src->device->pipe;
+   if (!pipe->resource_copy_region) {
+      say(why, why_size, "the driver has no resource copy operation");
+      return -1;
+   }
+   struct pipe_box box = { .x = src_offset, .width = size, .height = 1, .depth = 1 };
+   pipe->resource_copy_region(pipe, dst->res, 0, dst_offset, 0, 0, src->res, 0, &box);
+   struct rwa_device *device = src->device;
+   bool has_buf_tex = false;
+   for (struct rwa_buffer_texture *b = device->buffer_textures; b; b = b->next) {
+      if (b->source == dst) {
+         has_buf_tex = true;
+         break;
+      }
+   }
+   if (has_buf_tex) {
+      if (finish_or_say_why(device, true, "buffer copy nowait", why, why_size))
+         return -1;
+      for (struct rwa_buffer_texture *b = device->buffer_textures; b; b = b->next)
+         if (b->source == dst && buffer_texture_upload(b, why, why_size))
+            return -1;
+   }
+   return 0;
 }
 
 static bool
@@ -146,4 +245,47 @@ rwa_texture_copy(struct rwa_texture *src, unsigned src_level, unsigned src_slice
                               src->res, src_level, &from);
    texture_written(dst);
    return finish_or_say_why(src->device, true, "texture copy", why, why_size);
+}
+
+int
+rwa_texture_copy_nowait(struct rwa_texture *src, unsigned src_level, unsigned src_slice,
+                        const unsigned src_origin[3], struct rwa_texture *dst,
+                        unsigned dst_level, unsigned dst_slice, const unsigned dst_origin[3],
+                        const unsigned size[3], char *why, size_t why_size)
+{
+   RWA_LOCKED;
+   if (!src || !dst || src->device != dst->device) {
+      say(why, why_size, "texture copy requires two textures from one device");
+      return -1;
+   }
+   if ((src->chroma && rgb2p_format(src->shape.pixel_format)) ||
+       (dst->chroma && rgb2p_format(dst->shape.pixel_format))) {
+      say(why, why_size, "combined RGB2P copies require both planes");
+      return -1;
+   }
+   if (src->res->format != dst->res->format || src->shape.pixel_format != dst->shape.pixel_format) {
+      say(why, why_size, "texture copy requires identical pixel formats");
+      return -1;
+   }
+   struct pipe_box from, to;
+   if (!resource_level(src, &src_level, why, why_size) ||
+       !resource_level(dst, &dst_level, why, why_size) ||
+       !copy_texture_box(src, src_level, src_slice, src_origin, size, &from, why, why_size) ||
+       !copy_texture_box(dst, dst_level, dst_slice, dst_origin, size, &to, why, why_size))
+      return -1;
+   if (src->res == dst->res && src_level == dst_level && src_slice == dst_slice &&
+       from.x < to.x + to.width && to.x < from.x + from.width &&
+       from.y < to.y + to.height && to.y < from.y + from.height) {
+      say(why, why_size, "overlapping texture copy regions are unsupported");
+      return -1;
+   }
+   struct pipe_context *pipe = src->device->pipe;
+   if (!pipe->resource_copy_region) {
+      say(why, why_size, "the driver has no resource copy operation");
+      return -1;
+   }
+   pipe->resource_copy_region(pipe, dst->res, dst_level, to.x, to.y, to.z,
+                              src->res, src_level, &from);
+   texture_written(dst);
+   return 0;
 }

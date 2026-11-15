@@ -354,7 +354,6 @@ static pthread_mutex_t s_link_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void (*orig_add_to_run_loop)(id, SEL, id, id);
 static void (*orig_display_link_invalidate)(id, SEL);
-static void (*orig_cmdbuf_commit)(id, SEL);
 
 static void
 mercury_display_link_add_to_run_loop(id self, SEL cmd, id runloop, id mode)
@@ -416,22 +415,10 @@ mercury_set_suspended(int suspend)
     fprintf(stderr, "pb26: mercury poster submissions %s\n", suspend ? "suspended" : "resumed");
 }
 
-static void
-mercury_cmdbuf_commit(id self, SEL cmd)
-{
-    if (s_wallpaper_suspended) {
-        usleep(200000);
-    }
-    if (orig_cmdbuf_commit) {
-        orig_cmdbuf_commit(self, cmd);
-    }
-}
-
 enum {
     PB_HOOK_DISPLAYLINK = 1u << 0,
-    PB_HOOK_CMDBUF      = 1u << 1,
-    PB_HOOK_NOTIFY      = 1u << 2,
-    PB_HOOK_ALL         = PB_HOOK_DISPLAYLINK | PB_HOOK_CMDBUF | PB_HOOK_NOTIFY,
+    PB_HOOK_NOTIFY      = 1u << 1,
+    PB_HOOK_ALL         = PB_HOOK_DISPLAYLINK | PB_HOOK_NOTIFY,
 };
 static unsigned s_mercury_hooks_mask = 0;
 
@@ -458,17 +445,6 @@ install_mercury_hooks(void)
         }
     }
 
-    if (!(s_mercury_hooks_mask & PB_HOOK_CMDBUF)) {
-        Class cb_cls = objc_getClass("_MTLCommandBuffer");
-        if (cb_cls) {
-            Method m_commit = class_getInstanceMethod(cb_cls, sel_registerName("commit"));
-            if (m_commit) {
-                orig_cmdbuf_commit = (void (*)(id, SEL))method_getImplementation(m_commit);
-                method_setImplementation(m_commit, (IMP)mercury_cmdbuf_commit);
-            }
-            s_mercury_hooks_mask |= PB_HOOK_CMDBUF;
-        }
-    }
 
     if (!(s_mercury_hooks_mask & PB_HOOK_NOTIFY)) {
         int token_suspend = 0;

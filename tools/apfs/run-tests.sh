@@ -28,13 +28,21 @@ fail=0
 
 # the header lives in the kernel tree; xnu/files/ has the exported copy
 HDR_DIR=""
-for d in "$ROOT/../hackios-xnu-kernel/xnu-src/xnu-12377.121.6/bsd/miscfs/apfs" "$ROOT/../hackios-xnu-kernel/xnu/files/bsd/miscfs/apfs" "$ROOT/xnu-src/xnu-12377.121.6/bsd/miscfs/apfs" "$ROOT/xnu/files/bsd/miscfs/apfs"; do
+for d in "$ROOT/../hackios-xnu-kernel/xnu/files/bsd/miscfs/apfs" "$ROOT/xnu/files/bsd/miscfs/apfs" "$ROOT/../hackios-xnu-kernel/xnu-src/xnu-12377.121.6/bsd/miscfs/apfs" "$ROOT/xnu-src/xnu-12377.121.6/bsd/miscfs/apfs"; do
 	[ -f "$d/apfs_format.h" ] && { HDR_DIR=$d; break; }
 done
 if [ -z "$HDR_DIR" ]; then
 	echo "run-tests.sh: apfs_format.h is in neither the kernel tree nor xnu/files" >&2
 	exit 1
 fi
+
+CRYPTO_FLAGS=""
+for prefix in /opt/homebrew/opt/openssl /usr/local/opt/openssl; do
+	if [ -d "$prefix/lib" ] && [ -d "$prefix/include" ]; then
+		CRYPTO_FLAGS="-I$prefix/include -L$prefix/lib"
+		break
+	fi
+done
 
 echo "== 1. apfs_format.h ($HDR_DIR) against the offsets apfs.py reads at"
 cc -std=c11 -Wall -Wextra -I"$HDR_DIR" -o "$TMP/fmt_check" "$HERE/fmt_check.c" || exit 1
@@ -49,7 +57,7 @@ echo
 echo "== 1c. the C that reads file contents without the lock, on made-up runs (holes, ends inside blocks)"
 if cc -std=c11 -O2 -w -I"$HERE/host-shim" -c -o "$TMP/deflate.o" "$HDR_DIR/apfs_deflate.c" &&
 	cc -std=c11 -D_DEFAULT_SOURCE -O1 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
-	-I"$HDR_DIR" -o "$TMP/test_fetch" "$HERE/test_fetch.c" "$TMP/deflate.o" -lz -pthread; then
+	-I"$HDR_DIR" $CRYPTO_FLAGS -o "$TMP/test_fetch" "$HERE/test_fetch.c" "$HDR_DIR/apfs_zbitmap.c" "$TMP/deflate.o" -lz -lcrypto -pthread; then
 	"$TMP/test_fetch" || fail=1
 else
 	echo "   would not build"

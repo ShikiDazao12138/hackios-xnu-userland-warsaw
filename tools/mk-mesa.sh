@@ -65,6 +65,7 @@ SHA256=${SHA256:-592272df3cf01e85e7db300c449df5061092574d099da275d19e97ef0510f8a
 # on purpose: the layer only belongs on 26.x, never on 25.0.7.
 REBASE=${REBASE:-}
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+filesize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; }
 KROOT=$ROOT
 [ -d "$KROOT/xnu-deps" ] || KROOT=$(cd "$ROOT/../hackios-xnu-kernel" && pwd)
 PATH="$KROOT/xnu-deps/host/bin:$PATH"
@@ -221,7 +222,7 @@ if [ "${TURNIP:-}" = 1 ]; then
 	done
 	"$CC" -arch arm64 -isysroot "$SDK" -O1 -Wall -Imesa-$VERSION/include -Iturnip-probe \
 		-o out/tu_probe "$ROOT/tools/mesa/turnip-probe/tu_probe.c"
-	echo "mk-mesa.sh: Mesa $VERSION (Turnip): $B/out/libvulkan_freedreno.dylib, $(stat -c %s out/libvulkan_freedreno.dylib) bytes; $B/out/tu_probe"
+	echo "mk-mesa.sh: Mesa $VERSION (Turnip): $B/out/libvulkan_freedreno.dylib, $(filesize out/libvulkan_freedreno.dylib) bytes; $B/out/tu_probe"
 	exit 0
 fi
 DRIVERS=${DRIVERS:-softpipe,freedreno}
@@ -247,7 +248,7 @@ ninja -C $BUILD > ninja.log
 if [ "${AIR:-}" = 1 ]; then
 	ninja -C $BUILD src/gallium/drivers/freedreno/air_run >> ninja.log
 	cp $BUILD/src/gallium/drivers/freedreno/air_run out/air_run
-	echo "mk-mesa.sh: $B/out/air_run ($(stat -c %s out/air_run) bytes)"
+	echo "mk-mesa.sh: $B/out/air_run ($(filesize out/air_run) bytes)"
 	# and the same path as a library, which is not a test program: the Metal driver links
 	# against it to compile the bitcode Metal hands a function. Stripped and named the way
 	# libOSMesa is below -- -x keeps the global symbols, which here are the rwa_* of
@@ -266,7 +267,7 @@ if [ "${AIR:-}" = 1 ]; then
 	[ "$RWA" -gt 0 ] || { echo "mk-mesa.sh: libannibaleair.dylib exports no rwa_* at all: the interface of tools/mesa/air/air_metal.h is not in the library"; exit 1; }
 	[ "$(dylib_id out/libannibaleair.dylib)" = /annibale/lib/libannibaleair.dylib ] || {
 		echo "mk-mesa.sh: libannibaleair.dylib does not carry the install name /annibale/lib/libannibaleair.dylib"; exit 1; }
-	echo "mk-mesa.sh: $B/out/libannibaleair.dylib ($(stat -c %s out/libannibaleair.dylib) bytes," \
+	echo "mk-mesa.sh: $B/out/libannibaleair.dylib ($(filesize out/libannibaleair.dylib) bytes," \
 		"$RWA rwa_* functions, interface $(sha256sum < out/exports-rwa.txt | cut -d' ' -f1))"
 	# what this library was built from, so userland/build.sh can tell that it is older than the
 	# sources and come back here instead of shipping it beside a driver that disagrees with it;
@@ -305,5 +306,5 @@ cp "$glxml" out/gl.xml
 # build.sh sources to compute the value this file is compared against. Written last, as always:
 # the stamp is what says a successful build happened.
 mesa_from_stamp "$ROOT" "$VERSION" "$REBASE" > out/built-from
-echo "mk-mesa.sh: Mesa $VERSION ($DRIVERS): $B/out/libOSMesa.8.dylib, $(stat -c %s out/libOSMesa.8.dylib) bytes," \
+echo "mk-mesa.sh: Mesa $VERSION ($DRIVERS): $B/out/libOSMesa.8.dylib, $(filesize out/libOSMesa.8.dylib) bytes," \
 	"$(wc -l < out/exported-gl.txt) gl* functions"

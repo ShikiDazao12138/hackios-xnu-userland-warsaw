@@ -38,6 +38,8 @@ sb26_system_prefers_zh(void)
                             }
                         }
                         if (plist) CFRelease(plist);
+                    } else {
+                        free(buf);
                     }
                 } else {
                     free(buf);
@@ -111,6 +113,8 @@ sb26_loctable_display_name_for_path(const char *bundle_path)
                             }
                         }
                         if (plist) CFRelease(plist);
+                    } else {
+                        free(buf);
                     }
                 } else {
                     free(buf);
@@ -327,7 +331,10 @@ sb26_clear_wifi_join_failures(void)
     close(fd);
 
     CFDataRef data = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, (const UInt8 *)buf, st.st_size, kCFAllocatorMalloc);
-    if (!data) return;
+    if (!data) {
+        free(buf);
+        return;
+    }
     CFPropertyListRef plist = CFPropertyListCreateWithData(kCFAllocatorDefault, data,
         kCFPropertyListMutableContainersAndLeaves, NULL, NULL);
     CFRelease(data);
@@ -359,11 +366,19 @@ sb26_clear_wifi_join_failures(void)
     if (modified) {
         CFDataRef out = CFPropertyListCreateData(kCFAllocatorDefault, plist, kCFPropertyListBinaryFormat_v1_0, 0, NULL);
         if (out) {
-            int wfd = open(wifi_plist, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            char tmp_path[PATH_MAX];
+            snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d", wifi_plist, getpid());
+            int wfd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (wfd >= 0) {
                 ssize_t w = write(wfd, CFDataGetBytePtr(out), (size_t)CFDataGetLength(out));
-                (void)w;
-                close(wfd);
+                if (w == (ssize_t)CFDataGetLength(out)) {
+                    fsync(wfd);
+                    close(wfd);
+                    rename(tmp_path, wifi_plist);
+                } else {
+                    close(wfd);
+                    unlink(tmp_path);
+                }
             }
             CFRelease(out);
             fprintf(stderr, "sb26: cleared stale Wi-Fi join failure counters in com.apple.wifi.plist\n");

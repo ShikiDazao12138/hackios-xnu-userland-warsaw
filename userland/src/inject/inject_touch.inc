@@ -11,6 +11,7 @@ struct virtual_service_callbacks {
 
 extern IOHIDEventSystemClientRef IOHIDEventSystemClientCreateWithType(CFAllocatorRef allocator, int type, CFDictionaryRef attributes);
 extern void IOHIDEventSystemClientScheduleWithDispatchQueue(IOHIDEventSystemClientRef client, dispatch_queue_t queue);
+extern void IOHIDEventSystemClientUnscheduleFromDispatchQueue(IOHIDEventSystemClientRef client, dispatch_queue_t queue);
 extern IOHIDServiceClientRef IOHIDVirtualServiceClientCreateWithCallbacks(IOHIDEventSystemClientRef client, CFDictionaryRef attributes,
     const struct virtual_service_callbacks *callbacks, void *target, void *refcon);
 extern Boolean IOHIDVirtualServiceClientRemove(IOHIDServiceClientRef service);
@@ -178,11 +179,35 @@ make_service(IOHIDEventSystemClientRef client, const char *product, int page, in
 	    &kCFTypeDictionaryValueCallBacks);
 	CFStringRef name = CFStringCreateWithCString(NULL, product, kCFStringEncodingUTF8);
 	CFNumberRef page_number = number(page), usage_number = number(usage), zero = number(0);
-	CFArrayRef pairs;
+	CFArrayRef pairs = NULL;
+
+	if (!made || !properties || !pair || !name || !page_number || !usage_number || !zero) {
+		say("annibale: input: cannot allocate service properties for %s\n", product);
+		if (pair) CFRelease(pair);
+		if (properties) CFRelease(properties);
+		if (name) CFRelease(name);
+		if (page_number) CFRelease(page_number);
+		if (usage_number) CFRelease(usage_number);
+		if (zero) CFRelease(zero);
+		if (made) free(made);
+		return NULL;
+	}
 
 	CFDictionarySetValue(pair, CFSTR("DeviceUsagePage"), page_number);
 	CFDictionarySetValue(pair, CFSTR("DeviceUsage"), usage_number);
 	pairs = CFArrayCreate(NULL, (const void **)&pair, 1, &kCFTypeArrayCallBacks);
+	if (!pairs) {
+		say("annibale: input: cannot allocate device usage pairs for %s\n", product);
+		CFRelease(pair);
+		CFRelease(properties);
+		CFRelease(name);
+		CFRelease(page_number);
+		CFRelease(usage_number);
+		CFRelease(zero);
+		free(made);
+		return NULL;
+	}
+
 	CFDictionarySetValue(properties, CFSTR("PrimaryUsagePage"), page_number);
 	CFDictionarySetValue(properties, CFSTR("PrimaryUsage"), usage_number);
 	CFDictionarySetValue(properties, CFSTR("DeviceUsagePage"), page_number);
@@ -197,6 +222,13 @@ make_service(IOHIDEventSystemClientRef client, const char *product, int page, in
 	if (display) {
 		CFDictionarySetValue(properties, CFSTR("DisplayIntegrated"), kCFBooleanTrue);
 	}
+	CFRelease(pair);
+	CFRelease(pairs);
+	CFRelease(name);
+	CFRelease(page_number);
+	CFRelease(usage_number);
+	CFRelease(zero);
+
 	/* the dictionary stays: it is what service_copy_property() answers from */
 	made->properties = properties;
 	for (int attempt = 1; attempt <= 20; attempt++) {
@@ -215,6 +247,10 @@ make_service(IOHIDEventSystemClientRef client, const char *product, int page, in
 		IOHIDVirtualServiceClientRemove(service);
 		CFRelease(service);
 		service = NULL;
+	}
+	if (service == NULL) {
+		CFRelease(properties);
+		free(made);
 	}
 	return service;
 }
@@ -336,6 +372,7 @@ input_thread(__unused void *arg)
 		return NULL;
 	}
 	sleep(3);                       /* let backboardd get as far as starting its event server */
+	dispatch_queue_t queue = NULL;
 	for (unsigned i = 0; screen == NULL && i < sizeof(types) / sizeof(types[0]); i++) {
 		/* this waits until the server (this very program) answers */
 		client = IOHIDEventSystemClientCreateWithType(NULL, types[i], NULL);
@@ -343,10 +380,20 @@ input_thread(__unused void *arg)
 			say("annibale: input: no HID client of type %d\n", types[i]);
 			continue;
 		}
-		IOHIDEventSystemClientScheduleWithDispatchQueue(client, dispatch_queue_create("annibale.input", NULL));
+		queue = dispatch_queue_create("annibale.input", NULL);
+		if (queue != NULL) {
+			IOHIDEventSystemClientScheduleWithDispatchQueue(client, queue);
+		}
 		screen = make_service(client, "Annibale touch screen", HID_PAGE_DIGITIZER, HID_USAGE_TOUCH_SCREEN, true);
 		if (screen == NULL) {
 			say("annibale: input: a HID client of type %d may not create services\n", types[i]);
+			if (queue != NULL) {
+				IOHIDEventSystemClientUnscheduleFromDispatchQueue(client, queue);
+				dispatch_release(queue);
+				queue = NULL;
+			}
+			CFRelease(client);
+			client = NULL;
 		}
 	}
 	if (screen != NULL) {
@@ -448,10 +495,22 @@ watch_window_server_loop(void)
 		return;
 	}
 	mach_timebase_info(&timebase);
-	CFRunLoopAddObserver(CFRunLoopGetMain(), CFRunLoopObserverCreate(NULL, kCFRunLoopAfterWaiting, true, LONG_MIN,
-	    window_server_turn, NULL), kCFRunLoopCommonModes);
-	CFRunLoopAddObserver(CFRunLoopGetMain(), CFRunLoopObserverCreate(NULL, kCFRunLoopBeforeWaiting, true, COMMIT_ORDER - 1,
-	    window_server_turn, NULL), kCFRunLoopCommonModes);
-	CFRunLoopAddObserver(CFRunLoopGetMain(), CFRunLoopObserverCreate(NULL, kCFRunLoopBeforeWaiting, true,
-	    COMMIT_ORDER + 1, window_server_turn, &after), kCFRunLoopCommonModes);
+	CFRunLoopObserverRef obs1 = CFRunLoopObserverCreate(NULL, kCFRunLoopAfterWaiting, true, LONG_MIN,
+	    window_server_turn, NULL);
+	if (obs1) {
+		CFRunLoopAddObserver(CFRunLoopGetMain(), obs1, kCFRunLoopCommonModes);
+		CFRelease(obs1);
+	}
+	CFRunLoopObserverRef obs2 = CFRunLoopObserverCreate(NULL, kCFRunLoopBeforeWaiting, true, COMMIT_ORDER - 1,
+	    window_server_turn, NULL);
+	if (obs2) {
+		CFRunLoopAddObserver(CFRunLoopGetMain(), obs2, kCFRunLoopCommonModes);
+		CFRelease(obs2);
+	}
+	CFRunLoopObserverRef obs3 = CFRunLoopObserverCreate(NULL, kCFRunLoopBeforeWaiting, true,
+	    COMMIT_ORDER + 1, window_server_turn, &after);
+	if (obs3) {
+		CFRunLoopAddObserver(CFRunLoopGetMain(), obs3, kCFRunLoopCommonModes);
+		CFRelease(obs3);
+	}
 }

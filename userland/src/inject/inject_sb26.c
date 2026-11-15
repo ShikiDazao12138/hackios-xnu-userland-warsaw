@@ -398,6 +398,39 @@ sb26_hook_CFBundleCopyBundleLocalizations(CFBundleRef bundle)
     return (CFArrayRef)mut;
 }
 
+static int
+sb26_atomic_write_file(const char *target_path, const void *bytes, size_t len, mode_t mode, uid_t uid, gid_t gid)
+{
+    char tmp_path[PATH_MAX];
+    int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d", target_path, getpid());
+    if (n <= 0 || (size_t)n >= sizeof(tmp_path)) return -1;
+
+    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (fd < 0) return -1;
+
+    ssize_t written = write(fd, bytes, len);
+    if (written < 0 || (size_t)written != len) {
+        close(fd);
+        unlink(tmp_path);
+        return -1;
+    }
+    if (fsync(fd) != 0) {
+        close(fd);
+        unlink(tmp_path);
+        return -1;
+    }
+    close(fd);
+    if (uid != (uid_t)-1 && gid != (gid_t)-1) {
+        chown(tmp_path, uid, gid);
+    }
+    chmod(tmp_path, mode);
+    if (rename(tmp_path, target_path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
+}
+
 /*
  * Ensure .GlobalPreferences.plist in /private/var/mobile/Library/Preferences/
  * has AppleLanguages with "zh-Hans-CN" prioritized.
@@ -405,6 +438,9 @@ sb26_hook_CFBundleCopyBundleLocalizations(CFBundleRef bundle)
 static void
 sb26_ensure_chinese_preferences(void)
 {
+    const char *prog = getprogname();
+    if (!prog || strcmp(prog, "SpringBoard") != 0) return;
+
     static int preferences_ensured = 0;
     if (preferences_ensured) return;
     preferences_ensured = 1;
@@ -435,6 +471,8 @@ sb26_ensure_chinese_preferences(void)
                         CFRelease(data);
                         if (plist && CFGetTypeID(plist) == CFDictionaryGetTypeID()) dict = (CFMutableDictionaryRef)plist;
                         else if (plist) CFRelease(plist);
+                    } else {
+                        free(buf);
                     }
                 } else {
                     free(buf);
@@ -482,14 +520,7 @@ sb26_ensure_chinese_preferences(void)
 
         CFDataRef xml_data = CFPropertyListCreateData(kCFAllocatorDefault, dict, kCFPropertyListXMLFormat_v1_0, 0, NULL);
         if (xml_data) {
-            int wfd = open(pref_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (wfd >= 0) {
-                ssize_t written = write(wfd, CFDataGetBytePtr(xml_data), (size_t)CFDataGetLength(xml_data));
-                (void)written;
-                close(wfd);
-                chown(pref_path, 501, 501);
-                chmod(pref_path, 0644);
-            }
+            sb26_atomic_write_file(pref_path, CFDataGetBytePtr(xml_data), (size_t)CFDataGetLength(xml_data), 0644, 501, 501);
             CFRelease(xml_data);
         }
         CFPreferencesSetAppValue(CFSTR("AppleLanguages"), new_langs, kCFPreferencesAnyApplication);
@@ -510,13 +541,7 @@ sb26_ensure_chinese_preferences(void)
             mkdir("/private/var/root/Library", 0750);
             mkdir("/private/var/root/Library/Preferences", 0750);
             for (unsigned i = 0; i < sizeof(sys_prefs) / sizeof(sys_prefs[0]); i++) {
-                int sfd = open(sys_prefs[i], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                if (sfd >= 0) {
-                    ssize_t w = write(sfd, CFDataGetBytePtr(sync_xml), (size_t)CFDataGetLength(sync_xml));
-                    (void)w;
-                    close(sfd);
-                    chmod(sys_prefs[i], 0644);
-                }
+                sb26_atomic_write_file(sys_prefs[i], CFDataGetBytePtr(sync_xml), (size_t)CFDataGetLength(sync_xml), 0644, (uid_t)-1, (gid_t)-1);
             }
             CFRelease(sync_xml);
         }
@@ -627,11 +652,11 @@ install_sb26(void)
         strcmp(prog, "lsd") && strcmp(prog, "wifid"))) return;
 
     sb26_log_self_uuid(prog);
-    sb26_ensure_chinese_preferences();
-    sb26_clear_wifi_join_failures();
     if (!strcmp(prog, "SpringBoard")) {
+        sb26_ensure_chinese_preferences();
         sb26_sync_initial_brightness(0);
     }
+    sb26_clear_wifi_join_failures();
     sb26_install_localization_hooks();
     if (!strcmp(prog, "lsd") || !strcmp(prog, "wifid")) return;
 

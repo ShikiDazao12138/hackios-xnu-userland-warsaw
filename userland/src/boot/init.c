@@ -955,23 +955,27 @@ configure_inject(void)
  * idle daemons are killed to free vnodes. Give it what the kernel's own rule gives a bigger
  * configuration -- one for every 64 KB of memory, and 1024 -- up to MAX_VNODES.
  */
-#define MAX_VNODES      32768
+#define MAX_VNODES      263168
 
 static void
 configure_vnodes(void)
 {
-	unsigned long long memsize = 0;
-	size_t len = sizeof(memsize);
+	int cur_maxvnodes = 0;
+	size_t cur_len = sizeof(cur_maxvnodes);
 	int vnodes;
 
-	if (sysctlbyname("hw.memsize", &memsize, &len, NULL, 0) != 0) {
-		return;
+	if (sysctlbyname("kern.maxvnodes", &cur_maxvnodes, &cur_len, NULL, 0) != 0) {
+		cur_maxvnodes = 0;
 	}
-	vnodes = memsize / 65536 + 1024 > MAX_VNODES ? MAX_VNODES : (int)(memsize / 65536) + 1024;
-	if (sysctlbyname("kern.maxvnodes", NULL, NULL, &vnodes, sizeof(vnodes)) == 0) {
-		printf("init: up to %d vnodes\n", vnodes);
+	vnodes = MAX_VNODES;
+	if (vnodes > cur_maxvnodes) {
+		if (sysctlbyname("kern.maxvnodes", NULL, NULL, &vnodes, sizeof(vnodes)) == 0) {
+			printf("init: up to %d vnodes\n", vnodes);
+		} else {
+			printf("init: kern.maxvnodes: error %d\n", errno);
+		}
 	} else {
-		printf("init: kern.maxvnodes: error %d\n", errno);
+		printf("init: kern.maxvnodes %d >= %d, keeping\n", cur_maxvnodes, vnodes);
 	}
 }
 

@@ -22,7 +22,15 @@
 # Needs: hdiutil, 7zz (7-Zip 23 or newer), rsync, python3 and space for all extracted files.
 set -e
 cd "$(dirname "$0")"
-IPSW_DIR=${IPSW_DIR:-../out/ipsw/v57/26}
+if [ -z "$IPSW_DIR" ]; then
+	if [ -d "../../out/ipsw/v57/26" ]; then
+		IPSW_DIR=../../out/ipsw/v57/26
+	elif [ -d "../hackios-xnu-kernel/out/ipsw/v57/26" ]; then
+		IPSW_DIR=../hackios-xnu-kernel/out/ipsw/v57/26
+	else
+		IPSW_DIR=../out/ipsw/v57/26
+	fi
+fi
 CACHE=23G90__iPhone18,3
 for f in os.dmg systemos.dmg appos.dmg; do
 	[ -f "$IPSW_DIR/$f" ] || { echo "fetch.sh: no $IPSW_DIR/$f" >&2; exit 1; }

@@ -48,8 +48,10 @@ struct virtual_service_callbacks {
 
 extern IOHIDEventSystemClientRef IOHIDEventSystemClientCreateWithType(CFAllocatorRef allocator, int type, CFDictionaryRef attributes);
 extern void IOHIDEventSystemClientScheduleWithDispatchQueue(IOHIDEventSystemClientRef client, dispatch_queue_t queue);
+extern void IOHIDEventSystemClientUnscheduleFromDispatchQueue(IOHIDEventSystemClientRef client, dispatch_queue_t queue);
 extern IOHIDServiceClientRef IOHIDVirtualServiceClientCreateWithCallbacks(IOHIDEventSystemClientRef client, CFDictionaryRef attributes,
     const struct virtual_service_callbacks *callbacks, void *target, void *refcon);
+extern Boolean IOHIDVirtualServiceClientRemove(IOHIDServiceClientRef service);
 extern Boolean IOHIDVirtualServiceClientDispatchEvent(IOHIDServiceClientRef service, IOHIDEventRef event);
 /* 23G90 takes five doubles and 32-bit range/touch values. In the hand call,
  * touch and options occupy adjacent 32-bit stack slots; CF Boolean is one byte. */
@@ -267,12 +269,29 @@ make_service_ext(IOHIDEventSystemClientRef client, const char *product, int page
 
     if (!made || !properties || !pair || !name || !page_number || !usage_number || !zero) {
         say("input26: cannot allocate service properties for %s\n", product);
+        if (properties) CFRelease(properties);
+        if (pair) CFRelease(pair);
+        if (name) CFRelease(name);
+        if (page_number) CFRelease(page_number);
+        if (usage_number) CFRelease(usage_number);
+        if (zero) CFRelease(zero);
+        if (made) free(made);
         return NULL;
     }
 	CFDictionarySetValue(pair, CFSTR("DeviceUsagePage"), page_number);
 	CFDictionarySetValue(pair, CFSTR("DeviceUsage"), usage_number);
 	pairs = CFArrayCreate(NULL, (const void **)&pair, 1, &kCFTypeArrayCallBacks);
-    if (!pairs) return NULL;
+    if (!pairs) {
+        say("input26: cannot allocate device usage pairs for %s\n", product);
+        CFRelease(properties);
+        CFRelease(pair);
+        CFRelease(name);
+        CFRelease(page_number);
+        CFRelease(usage_number);
+        CFRelease(zero);
+        free(made);
+        return NULL;
+    }
 	CFDictionarySetValue(properties, CFSTR("PrimaryUsagePage"), page_number);
 	CFDictionarySetValue(properties, CFSTR("PrimaryUsage"), usage_number);
 	CFDictionarySetValue(properties, CFSTR("DeviceUsagePage"), page_number);
@@ -297,6 +316,8 @@ make_service_ext(IOHIDEventSystemClientRef client, const char *product, int page
     service = IOHIDVirtualServiceClientCreateWithCallbacks(client, properties, &service_callbacks, NULL, made);
     if (service == NULL) {
         say("input26: registration failed for %s\n", product);
+        CFRelease(properties);
+        free(made);
         return NULL;
     }
     int max_polls = require_open ? 20 : 5;
@@ -305,6 +326,10 @@ make_service_ext(IOHIDEventSystemClientRef client, const char *product, int page
     }
     if (!made->opened && require_open) {
         say("input26: event server did not open %s after %d polls\n", product, max_polls);
+        IOHIDVirtualServiceClientRemove(service);
+        CFRelease(service);
+        CFRelease(properties);
+        free(made);
         return NULL;
     }
     return service;
@@ -614,12 +639,25 @@ input_run(void)
         return 1;
     }
     dispatch_queue_t queue = dispatch_queue_create("annibale.input", NULL);
-    if (!queue) return 1;
+    if (!queue) {
+        CFRelease(client);
+        return 1;
+    }
     IOHIDEventSystemClientScheduleWithDispatchQueue(client, queue);
     screen = make_service(client, "Annibale touch screen", HID_PAGE_DIGITIZER, HID_USAGE_TOUCH_SCREEN, true);
-    if (!screen) return 1;
+    if (!screen) {
+        IOHIDEventSystemClientUnscheduleFromDispatchQueue(client, queue);
+        dispatch_release(queue);
+        CFRelease(client);
+        return 1;
+    }
     buttons = make_service(client, "Annibale buttons", HID_PAGE_CONSUMER, HID_USAGE_CONSUMER_CONTROL, false);
-    if (!buttons) return 1;
+    if (!buttons) {
+        IOHIDEventSystemClientUnscheduleFromDispatchQueue(client, queue);
+        dispatch_release(queue);
+        CFRelease(client);
+        return 1;
+    }
     {
         struct annibale_sensor_sample init_sample = { 0 };
         int sfd = open(ANNIBALE_SENSORS_DEVICE, O_RDONLY | O_NONBLOCK);
