@@ -335,8 +335,12 @@ PY
 	[ -n "$IOS_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
 fi
 
+# the GPU firmware Qualcomm redistributes is in the repository (firmware-gen8/README.md); ../fw-gpu holds
+# the phone's own gen80000_zap.mbn
+mkdir -p root/fw
+cp ../firmware-gen8/gen80000_aqe.fw ../firmware-gen8/gen80000_gmu.bin ../firmware-gen8/gen80000_sqe.fw \
+	../firmware-gen8/LICENSE.qcom.txt ../firmware-gen8/NOTICE.qcom.txt root/fw/
 if [ -d ../fw-gpu ]; then
-	mkdir -p root/fw
 	cp ../fw-gpu/* root/fw/
 fi
 

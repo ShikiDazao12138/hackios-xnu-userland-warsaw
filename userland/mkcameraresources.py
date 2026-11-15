@@ -63,7 +63,9 @@ def stage(base_path, profile_path, output_path):
     index = next((i for i, device in enumerate(devices)
                   if device.get("uniqueName", "").startswith("Front ")), len(devices))
     devices.insert(index, front)
-    data = plistlib.dumps(config, fmt=plistlib.FMT_BINARY, sort_keys=False)
+    # sorted keys, as every property list of the root image: tools/release/localfiles.py makes this
+    # file again from iOS's and has to arrive at the same bytes
+    data = plistlib.dumps(config, fmt=plistlib.FMT_BINARY)
     output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
     temporary = output_path.with_suffix(".plist.tmp")
     temporary.write_bytes(data)

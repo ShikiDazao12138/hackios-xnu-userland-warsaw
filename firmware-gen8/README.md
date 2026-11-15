@@ -7,13 +7,11 @@ K90 的 GPU 需要四个固件文件：`gen80000_gmu.bin`、`gen80000_sqe.fw`、
 
 ## 1. 放进根盘
 
-内核从内存盘里根盘的 `/fw/` 读取这四个文件。`userland/build.sh` 构建根盘时把 `hackios-xnu-kernel/fw-gpu/` 里的文件复制到 `/fw/`。在顶层工作区执行：
+内核从内存盘里根盘的 `/fw/` 读取这四个文件。`userland/build.sh` 构建根盘时把本目录的三个固件和两个许可文件复制到 `/fw/`，再复制 `hackios-xnu-userland/fw-gpu/` 里的文件。`gen80000_zap.mbn` 从手机读出，在顶层工作区执行：
 
 ```sh
-mkdir -p hackios-xnu-kernel/fw-gpu
-cp hackios-xnu-userland/firmware-gen8/gen80000_gmu.bin hackios-xnu-userland/firmware-gen8/gen80000_sqe.fw hackios-xnu-userland/firmware-gen8/gen80000_aqe.fw hackios-xnu-kernel/fw-gpu/
-cp hackios-xnu-userland/firmware-gen8/LICENSE.qcom.txt hackios-xnu-userland/firmware-gen8/NOTICE.qcom.txt hackios-xnu-kernel/fw-gpu/
-adb -s "$ANDROID_SERIAL" pull /odm/firmware/gen80000_zap.mbn hackios-xnu-kernel/fw-gpu/
+mkdir -p hackios-xnu-userland/fw-gpu
+adb -s "$ANDROID_SERIAL" pull /odm/firmware/gen80000_zap.mbn hackios-xnu-userland/fw-gpu/
 ```
 
 `/odm/firmware/` 不需要 root 即可读取。
