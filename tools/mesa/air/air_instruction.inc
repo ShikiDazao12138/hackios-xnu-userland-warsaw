@@ -3,6 +3,15 @@
  * SPDX-License-Identifier: MIT
  */
 
+/* LLVM takes an extractelement/insertelement index of any integer type as unsigned. An i1 index
+ * (RenderBox's stroke coverage shader picks one of two caps with a comparison) is a NIR boolean,
+ * and ir3 has no 1-bit u2u32: its compile aborts in create_cov. */
+static nir_def *
+air_element_index(struct air_ctx *c, nir_def *i)
+{
+   return i->bit_size == 1 ? nir_b2i32(&c->b, i) : nir_u2u32(&c->b, i);
+}
+
 static bool
 translate_instruction(struct air_ctx *c, const struct air_inst *in)
 {
@@ -112,7 +121,7 @@ translate_instruction(struct air_ctx *c, const struct air_inst *in)
       nir_def *i = air_get_ssa(c, in->operands[1]);
       if (!v || !i)
          return false;
-      air_set(c, &in->base, air_val_ssa(c, nir_vector_extract(&c->b, v, nir_u2u32(&c->b, i))));
+      air_set(c, &in->base, air_val_ssa(c, nir_vector_extract(&c->b, v, air_element_index(c, i))));
       return true;
    }
    case AIR_OP_INSERTELT: {
@@ -127,7 +136,7 @@ translate_instruction(struct air_ctx *c, const struct air_inst *in)
        * failed the whole pipeline (kernel-12377-attr26-driver-revert, s005.log: "instruction:
        * insertelement at a run-time index (block 6, instruction 1, opcode 10)"). */
       air_set(c, &in->base,
-              air_val_ssa(c, nir_vector_insert(&c->b, v, x, nir_u2u32(&c->b, i))));
+              air_val_ssa(c, nir_vector_insert(&c->b, v, x, air_element_index(c, i))));
       return true;
    }
    case AIR_OP_SHUFFLEVEC: {

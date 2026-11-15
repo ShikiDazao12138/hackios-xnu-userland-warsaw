@@ -2904,7 +2904,7 @@ bind_stage(struct rwa_device *device, mesa_shader_stage stage,
             num_views = MAX2(num_views, r->index + 1);
             break;
          }
-         if (t->chroma && rgb2p_format(t->shape.pixel_format))
+         if (t->chroma && rgb2p_format(t->shape.pixel_format) && !rgb2p_full(t->shape.pixel_format))
             rgb2p_samples |= 1u << r->index;
          /* The view is made once and kept with the texture: a device has one context,
           * so a view of this texture is a view for every pipeline that will sample it.

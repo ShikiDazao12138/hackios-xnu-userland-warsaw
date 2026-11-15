@@ -79,7 +79,7 @@ struct rwa_device {
     */
    struct rwa_buffer_texture *buffer_textures;
 
-   void *rgb2p_csos[3][3];
+   void *rgb2p_csos[4][3];
    struct rwa_bound_state bound;
 };
 

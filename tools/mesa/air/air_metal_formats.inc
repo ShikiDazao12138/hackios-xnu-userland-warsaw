@@ -97,8 +97,10 @@ static const struct rwa_pixel_format rwa_pixel_formats[] = {
    ASTC(12, 10, 10), ASTC(13, 12, 10), ASTC(14, 12, 12),
 #undef ASTC
 
-   /* RGB2P renders per-fragment codes here and stores both planes at pass end. */
+   /* RGB2P renders per-fragment codes here and stores both planes at pass end; 542 renders
+    * blendable colour instead. */
    { 540, "MTLPixelFormatRGB8_420_2P",      PIPE_FORMAT_R8G8B8A8_UINT },
+   { 542, "MTLPixelFormatRGB8_444_2P",      PIPE_FORMAT_R8G8B8A8_UNORM },
    { 543, "MTLPixelFormatRGB10_420_2P",     PIPE_FORMAT_R16G16B16A16_UINT },
    { 544, "MTLPixelFormatRGB10_422_2P",     PIPE_FORMAT_R16G16B16A16_UINT },
 

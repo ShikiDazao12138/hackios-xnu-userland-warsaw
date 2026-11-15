@@ -10,7 +10,9 @@ clear_bound_attachments(struct pipe_context *pipe, const struct rwa_draw *draw)
       union pipe_color_union clear = { 0 };
       struct rwa_texture *target = draw->color[item->attachment];
       for (unsigned c = 0; c < 4; c++) {
-         if (target && rgb2p_format(target->shape.pixel_format))
+         if (target && rgb2p_full(target->shape.pixel_format))
+            clear.f[c] = c == 3 ? 1.0f : item->rgba[c];   /* 542 has no alpha to clear */
+         else if (target && rgb2p_format(target->shape.pixel_format))
             clear.ui[c] = c == 3 ? 1 : rgb2p_clear_code(target->shape.pixel_format, item->rgba[c]);
          else
             clear.f[c] = item->rgba[c];

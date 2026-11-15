@@ -26,7 +26,8 @@ lower_rgb2p_outputs(nir_shader *nir, const struct rwa_render_shape *shape,
 {
    unsigned mask = 0;
    for (unsigned i = 0; i < shape->color_count; i++)
-      if (rgb2p_format(shape->color_format[i])) mask |= 1u << i;
+      if (rgb2p_format(shape->color_format[i]) && !rgb2p_full(shape->color_format[i]))
+         mask |= 1u << i;
    if (!mask) return true;
    nir_foreach_function_impl(impl, nir) {
       nir_builder b = nir_builder_create(impl);
@@ -73,16 +74,16 @@ rwa_texture_combine_rgb2p(struct rwa_texture *y, struct rwa_texture *uv,
                           unsigned format, unsigned usage, char *why, size_t why_size)
 {
    RWA_LOCKED;
-   bool ten = format != 540;
-   unsigned vertical = format == 544 ? 1 : 2;
+   bool ten = format == 543 || format == 544, full = rgb2p_full(format);
+   unsigned horizontal = full ? 1 : 2, vertical = full || format == 544 ? 1 : 2;
    unsigned effective = usage ? usage : 5;
    bool render = (effective & 4) != 0;
    if (!rgb2p_format(format) || !y || !uv || y->device != uv->device ||
        y->shape.pixel_format != (ten ? 20 : 10) || uv->shape.pixel_format != (ten ? 60 : 30) ||
        y->shape.type != 2 || uv->shape.type != 2 || y->shape.sample_count != 1 ||
        uv->shape.sample_count != 1 || texture_levels(y) != 1 || texture_levels(uv) != 1 ||
-       (y->shape.width & 1) || (y->shape.height & 1) ||
-       uv->shape.width != y->shape.width/2 ||
+       (!full && ((y->shape.width & 1) || (y->shape.height & 1))) ||
+       uv->shape.width != y->shape.width/horizontal ||
        uv->shape.height != y->shape.height/vertical ||
        !y->shader_read || !uv->shader_read || (effective & ~0x15u) ||
        (render && (!y->shader_write || !uv->shader_write))) {
@@ -92,7 +93,7 @@ rwa_texture_combine_rgb2p(struct rwa_texture *y, struct rwa_texture *uv,
    struct rwa_texture *t;
    if (render) {
       struct rwa_texture_shape shape = y->shape;
-      shape.pixel_format = ten ? 113 : 73;
+      shape.pixel_format = full ? 70 : ten ? 113 : 73;
       shape.usage = 7;
       t = texture_of_shape(y->device, &shape, NULL, why, why_size);
       if (!t) return NULL;
@@ -113,6 +114,7 @@ rwa_texture_combine_rgb2p(struct rwa_texture *y, struct rwa_texture *uv,
    t->shader_read = (effective & 1) != 0;
    t->shader_write = false;
    t->format_name = format == 540 ? "MTLPixelFormatRGB8_420_2P"
+                     : format == 542 ? "MTLPixelFormatRGB8_444_2P"
                      : format == 543 ? "MTLPixelFormatRGB10_420_2P" : "MTLPixelFormatRGB10_422_2P";
    t->storage_owner = y;
    t->chroma = uv;
@@ -143,9 +145,10 @@ static nir_shader *
 rgb2p_conversion_shader(const struct nir_shader_compiler_options *options,
                          unsigned format, bool begin)
 {
-   bool ten = format != 540;
-   unsigned vertical = format == 544 ? 1 : 2;
-   enum pipe_format storage = ten ? PIPE_FORMAT_R16G16B16A16_UINT : PIPE_FORMAT_R8G8B8A8_UINT;
+   bool ten = format == 543 || format == 544, full = rgb2p_full(format);
+   unsigned vertical = full || format == 544 ? 1 : 2;
+   enum pipe_format storage = full ? PIPE_FORMAT_R8G8B8A8_UNORM
+                            : ten ? PIPE_FORMAT_R16G16B16A16_UINT : PIPE_FORMAT_R8G8B8A8_UINT;
    enum pipe_format luma = ten ? PIPE_FORMAT_R16_UNORM : PIPE_FORMAT_R8_UNORM;
    enum pipe_format chroma = ten ? PIPE_FORMAT_R16G16_UNORM : PIPE_FORMAT_R8G8_UNORM;
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE, options,
@@ -162,9 +165,21 @@ rgb2p_conversion_shader(const struct nir_shader_compiler_options *options,
    nir_def *width = nir_channel(&b, size, 0), *height = nir_channel(&b, size, 1);
    nir_push_if(&b, nir_iand(&b, nir_ult(&b, x, width), nir_ult(&b, y, height)));
    nir_def *coord = nir_vec4(&b, x, y, zero, zero);
-   nir_def *uv_coord = nir_vec4(&b, nir_ushr_imm(&b, x, 1),
+   nir_def *uv_coord = full ? coord : nir_vec4(&b, nir_ushr_imm(&b, x, 1),
                                vertical == 2 ? nir_ushr_imm(&b, y, 1) : y, zero, zero);
-   if (begin) {
+   if (full && begin) {
+      nir_def *yy = nir_channel(&b, rgb2p_image_load(&b, 1, coord, luma, false), 0);
+      nir_def *uv = rgb2p_image_load(&b, 2, coord, chroma, false);
+      rgb2p_image_store(&b, 0, coord, nir_vec4(&b, nir_channel(&b, uv, 1), yy,
+                         nir_channel(&b, uv, 0), nir_imm_float(&b, 1)), storage, false);
+   } else if (full) {
+      nir_def *v = rgb2p_image_load(&b, 0, coord, storage, false);
+      nir_def *one = nir_imm_float(&b, 1), *none = nir_imm_float(&b, 0);
+      rgb2p_image_store(&b, 1, coord, nir_vec4(&b, nir_channel(&b, v, 1), none, none, one),
+                         luma, false);
+      rgb2p_image_store(&b, 2, coord, nir_vec4(&b, nir_channel(&b, v, 2), nir_channel(&b, v, 0),
+                                                 none, one), chroma, false);
+   } else if (begin) {
       nir_def *yy = nir_channel(&b, rgb2p_image_load(&b, 1, coord, luma, false), 0);
       nir_def *uv = rgb2p_image_load(&b, 2, uv_coord, chroma, false);
       nir_def *v = nir_vec4(&b, nir_channel(&b, uv, 1), yy, nir_channel(&b, uv, 0),
@@ -216,7 +231,7 @@ rgb2p_conversion_shader(const struct nir_shader_compiler_options *options,
 static nir_shader *
 rgb2p_sample_shader(const struct nir_shader_compiler_options *options, unsigned format)
 {
-   bool ten = format != 540;
+   bool ten = format == 543 || format == 544;
    unsigned vertical = format == 544 ? 1 : 2;
    enum pipe_format storage = ten ? PIPE_FORMAT_R10G10B10A2_UNORM : PIPE_FORMAT_R8G8B8A8_UNORM;
    enum pipe_format luma = ten ? PIPE_FORMAT_R16_UNORM : PIPE_FORMAT_R8_UNORM;
@@ -276,7 +291,9 @@ static void *
 rgb2p_compute_state(struct rwa_device *device, unsigned format, unsigned kind,
                      char *why, size_t why_size)
 {
-   unsigned index = format == 540 ? 0 : format == 543 ? 1 : 2;
+   unsigned index = format == 540 ? 0 : format == 543 ? 1 : format == 544 ? 2 : 3;
+   /* 542 has nothing to interpolate: its sample copy is the pass-begin load into RGBA8Unorm. */
+   if (rgb2p_full(format) && kind == 2) kind = 0;
    void **saved = &device->rgb2p_csos[index][kind];
    if (*saved) return *saved;
    nir_shader *nir = kind == 2 ? rgb2p_sample_shader(device->nir_options, format)
@@ -326,7 +343,7 @@ rgb2p_prepare_sample(struct rwa_texture *t, char *why, size_t why_size)
    }
    if (!t->rgb2p_sample) {
       struct rwa_texture_shape shape = t->shape;
-      shape.pixel_format = t->shape.pixel_format == 540 ? 70 : 90;
+      shape.pixel_format = t->shape.pixel_format == 543 || t->shape.pixel_format == 544 ? 90 : 70;
       shape.usage = 3;
       struct rwa_texture *made = texture_of_shape(t->device, &shape, NULL, why, why_size);
       if (!made) return false;
@@ -358,7 +375,7 @@ rwa_texture_rgb2p_pass(struct rwa_texture *t, bool begin, char *why, size_t why_
 static void
 rgb2p_device_close(struct rwa_device *device)
 {
-   for (unsigned i = 0; i < 3; i++)
+   for (unsigned i = 0; i < 4; i++)
       for (unsigned j = 0; j < 3; j++)
          if (device->rgb2p_csos[i][j])
             device->pipe->delete_compute_state(device->pipe, device->rgb2p_csos[i][j]);
