@@ -51,6 +51,15 @@ static int split_tabs(char *line, char **fields, int n) {
     fields[3] = "0"; fields[4] = "/private/var/test"; return 5;
 }
 static unsigned long parse_number(const char *s, int base) { return strtoul(s, NULL, base); }
+/* init reads its switches from the kernel command line; this run enables the self-tests */
+static const char *kernel_bootargs = "debug=0x10e init_selftest=1";
+static int fake_sysctlbyname(const char *name, void *old, size_t *oldlen, void *new, size_t newlen) {
+    assert(!strcmp(name, "kern.bootargs") && old && oldlen && !new && !newlen);
+    size_t n = strlen(kernel_bootargs);
+    if (n > *oldlen) n = *oldlen;
+    memcpy(old, kernel_bootargs, n); *oldlen = n; return 0;
+}
+#define sysctlbyname fake_sysctlbyname
 #define mount fake_mount
 #define lstat fake_lstat
 #define stat(p, s) no_package(p, s)
@@ -108,7 +117,12 @@ int main(void) {
 def main():
     mounts = (ROOT / 'userland/src/boot/init_mount.inc').read_text()
     init = (ROOT / 'userland/src/boot/init.c').read_text()
-    mount_function = mounts[mounts.index('static int\nmount_writable(void)'):mounts.index('\n/*\n * What the last boot')]
+    def function(text, head):
+        start = text.index(head)
+        return text[start:text.index('\n}\n', start) + 3]
+    mount_function = (function(init, 'static const char *\nboot_arg(const char *name)')
+                      + function(mounts, 'static int\nhas_bootarg(')
+                      + function(mounts, 'static int\nmount_writable(void)'))
     startup = init[init.index('\tshow_system();'):]
     source = PRELUDE + mount_function + STUBS + '\nstatic int startup(void) {\n' + startup + SCENARIOS
     compiler = shlex.split(os.environ.get('CC', 'clang'))

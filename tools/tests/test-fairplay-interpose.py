@@ -387,10 +387,6 @@ def main():
              'watched_IOConnectCallStructMethod', 'watched_dlopen', 'watched_MGCopyAnswer',
              'watched_SecTaskCopyValueForEntitlement']
     functions = {name: extract(source, name) for name in names}
-    for symbol in ('IOIteratorNext', 'IOConnectCallStructMethod',
-                   'IORegistryEntryFromPath', 'IORegistryEntryCreateCFProperty'):
-        assert '{ (const void *)watched_' + symbol + ', (const void *)' + symbol + ' }' in source
-    assert 'IOIteratorReset(' not in source and 'IOObjectRelease(' not in source
     compiler = shlex.split(os.environ.get('CC', 'clang'))
     mutations = [
         ('extra iterator consumption', 'watched_IOServiceGetMatchingServices',

@@ -121,7 +121,7 @@ int main(int argc,char **argv) {
 def build(label, texts):
     alltext='\n'.join(texts)
     structs=structure(alltext,'rwa_texture')+structure(alltext,'rwa_buffer_texture')
-    body='\n'.join(function(alltext,n) for n in ['texture_format','texture_levels','texture_written'])
+    body='\n'.join(function(alltext,n) for n in ['rgb2p_format','texture_format','texture_levels','texture_written'])
     later='\n'.join(function(alltext,n) for n in ['buffer_texture_bytes','rows_hash','buffer_texture_download','rwa_texture_view','buffer_textures_forget','rwa_buffer_textures_writeback','rwa_texture_destroy'])
     init='t->references = 1;' if 'unsigned references;' in structs else ''
     lock_start = alltext.index('static pthread_mutex_t rwa_lock =')
@@ -137,7 +137,7 @@ def build(label, texts):
         (OUT/(label+'-'+case+'.log')).write_text(r.stdout+r.stderr)
     return results
 
-names=['air_metal.c','air_metal_texture.inc','air_metal_resource_private.h']
+names=['air_metal.c','air_metal_allocation.inc','air_metal_texture.inc','air_metal_resource_private.h','air_metal_rgb2p_private.h']
 texts=[(SRC/n).read_text() for n in names]
 results = build('production', texts)
 assert all(x == 0 for x in results)

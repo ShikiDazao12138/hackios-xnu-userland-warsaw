@@ -40,7 +40,7 @@ PREFIX = r'''
 
 static const char *program = "SpringBoard";
 static int matches_build = 1, callbacks, uuid_calls, prefs_calls, wifi_calls;
-static int brightness_calls, loc_calls, bitmap_calls, unlock_calls, layer_calls;
+static int brightness_calls, loc_calls, unlock_calls, layer_calls;
 static int rate_calls, power_calls, delete_calls, unregister_calls, sync_calls;
 static int native_calls, request_calls, completion_calls;
 static BOOL allow_delete, bundle_present = YES, data_present = YES;
@@ -141,7 +141,6 @@ static Method checked_method(const char *c, const char *s, const char *e, uintpt
 }
 static void setup_activation_state(id s, SEL c) { (void)s; (void)c; }
 static uintptr_t code_address(IMP p) { return (uintptr_t)p; }
-static void install_bitmap_selection(uintptr_t slide) { (void)slide; bitmap_calls++; }
 static void install_unlock(void) { unlock_calls++; }
 static void sb26_install_layer_dump(void) { layer_calls++; }
 static void sb26_install_rate(uintptr_t slide) { (void)slide; rate_calls++; }
@@ -173,19 +172,19 @@ int main(int argc, char **argv) {
         if (!strcmp(scenario, "initialization")) {
             assert(uuid_calls == 1 && prefs_calls == 1 && wifi_calls == 1);
             assert(brightness_calls == 1 && callbacks == 1 && loc_calls == 3);
-            assert(bitmap_calls == 1 && unlock_calls == 1 && layer_calls == 1);
+            assert(unlock_calls == 1 && layer_calls == 1);
             assert(rate_calls == 1 && power_calls == 1);
         } else if (!strcmp(scenario, "preferences")) {
             assert(uuid_calls == 1 && callbacks == 1 && loc_calls == 2);
             assert(brightness_calls == 0 && power_calls == 0);
         } else if (!strcmp(scenario, "lsd") || !strcmp(scenario, "wifid")) {
-            assert(uuid_calls == 1 && prefs_calls == 1 && loc_calls == 1);
+            assert(uuid_calls == 1 && prefs_calls == 0 && loc_calls == 1);
             assert(callbacks == 0 && brightness_calls == 0 && layer_calls == 0);
         } else if (!strcmp(scenario, "unrelated")) {
             assert(uuid_calls == 0 && prefs_calls == 0 && callbacks == 0);
         } else if (!strcmp(scenario, "build-mismatch")) {
             assert(uuid_calls == 1 && brightness_calls == 1 && loc_calls == 1);
-            assert(callbacks == 0 && bitmap_calls == 0 && power_calls == 0);
+            assert(callbacks == 0 && unlock_calls == 0 && power_calls == 0);
         } else if (!strcmp(scenario, "methods")) {
             assert(springboard && image_callback);
             image_callback(NULL, 0);

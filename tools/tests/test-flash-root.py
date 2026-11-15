@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run flash_root from init.c with simulated mounts and root switching.
+"""Run flash_root from init.c and init_mount.inc with simulated mounts and root switching.
 
 Requires Python 3 and a host C compiler (CC, or clang). This exercises the C control
 flow for both system layouts and five failures; it does not mount APFS or test the
@@ -166,12 +166,15 @@ def main():
     # Compile the current implementation, including its check() failure accounting.
     start = source.index("#define PATTERN_SIZE")
     end = source.index("/* Same formula as build.sh", start)
+    mounts = (root / "userland/src/boot/init_mount.inc").read_text()
+    mount_start = mounts.index("/*\n * Mount a cryptex on")
+    mount_end = mounts.index("\n}\n", mounts.index("static int\nflash_root(const char *dev)")) + 3
     compiler = shlex.split(os.environ.get("CC", "clang"))
     with tempfile.TemporaryDirectory(prefix="flash-root-test-") as temp:
         directory = Path(temp)
         c_file = directory / "flash-root.c"
         binary = directory / "flash-root-test"
-        c_file.write_text(HEADER + source[start:end] + TEST_MAIN)
+        c_file.write_text(HEADER + source[start:end] + mounts[mount_start:mount_end] + TEST_MAIN)
         subprocess.run(compiler + ["-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
                                    str(c_file), "-o", str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
