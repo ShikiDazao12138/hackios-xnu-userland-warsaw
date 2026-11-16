@@ -147,8 +147,8 @@ jobs:
           done
 
           # Ours, kept in the repository, always the current ones.
-          rm -rf "mesa-$MESA_VERSION/src/redwood-drm" "mesa-$MESA_VERSION/src/compiler/air"
-          cp -r /tmp/u/tools/mesa/redwood-drm "mesa-$MESA_VERSION/src/redwood-drm"
+          rm -rf "mesa-$MESA_VERSION/src/annibale-drm" "mesa-$MESA_VERSION/src/compiler/air"
+          cp -r /tmp/u/tools/mesa/annibale-drm "mesa-$MESA_VERSION/src/annibale-drm"
           cp -r /tmp/u/tools/mesa/air "mesa-$MESA_VERSION/src/compiler/air"
           echo "--- air frontend in tree: $(ls "mesa-$MESA_VERSION/src/compiler/air" | wc -l) entries ---"
 
@@ -216,9 +216,11 @@ jobs:
           set -euo pipefail
           export PATH="$HOST_BIN:/tmp/venv/bin:$PATH"
           export PYTHONHASHSEED=0
-          TARGET=src/gallium/drivers/freedreno/libredwoodair.dylib
-          echo "--- targets that mention redwoodair ---"
-          ninja -C /tmp/mesa/build -t targets all | grep -i redwoodair || true
+          echo "--- targets that mention air ---"
+          ninja -C /tmp/mesa/build -t targets all | grep -iE 'lib(redwood|annibale)air\.dylib' || true
+          TARGET=$(ninja -C /tmp/mesa/build -t targets all | grep -oE '^[^:]*lib(redwood|annibale)air\.dylib' | head -1)
+          echo "TARGET=$TARGET"
+          [ -n "$TARGET" ] || { echo "::error::no air dylib target found"; exit 1; }
           ninja -C /tmp/mesa/build -v "$TARGET" 2>&1 | tee /tmp/mesa/out/ninja.log
           ls -l "/tmp/mesa/build/$TARGET"
 
@@ -229,7 +231,8 @@ jobs:
         # signature, because rewriting a Mach-O invalidates one.
         run: |
           set -euo pipefail
-          B=/tmp/mesa/build/src/gallium/drivers/freedreno/libredwoodair.dylib
+          B=$(find /tmp/mesa/build -name 'lib*air.dylib' -type f | head -1)
+          echo "built: $B"
           O=/tmp/mesa/out/libredwoodair.dylib
           cp "$B" "$O"
           install_name_tool -id /redwood/lib/libredwoodair.dylib "$O"
