@@ -8,10 +8,11 @@ The phone runs Android with root (su).  The files stay where they are on the par
 first 512 MiB of darwin_var (ANNFS001's metadata slots and its panic log; its data starts at
 512 MiB) is saved to BACKUP_DIR, an APFS container is built on this machine with its metadata in
 those 512 MiB and its files' extents on the existing data (apfs-tool annfs, cmd_annfs.c), and
-those 512 MiB are written back.  The container covers the partition less its last 32 MiB, which
-the kernel keeps for the panic log and the backlight setting; file data ANNFS has there is
-copied into the first 512 MiB with the rest.  Every transfer is checked with SHA-256; a
-partition that is APFS already is left alone.
+those 512 MiB are written back.  Without a darwin_nvram partition the container covers the
+partition less its last 32 MiB, which tools/userdata-dual-carve.py --split-nvram then makes
+darwin_nvram (NVRAM and the panic log); file data ANNFS has there is copied into the first
+512 MiB with the rest.  With darwin_nvram the container covers the whole partition.  Every
+transfer is checked with SHA-256; a partition that is APFS already is left alone.
 
 --format makes the partition an empty APFS data volume instead, whatever it holds (a new
 install, or starting over): every file on it is gone.  The first 512 MiB are saved first too.
@@ -95,13 +96,15 @@ def put_head(serial, dev, path):
 
 
 def find_partition(serial):
+    """darwin_var's device and size, and how much of its end the container leaves out."""
     if su(serial, 'id -u') != '0':
         die('no root on the phone (su)')
     dev = su(serial, 'readlink -f /dev/block/by-name/darwin_var')
     size = int(su(serial, 'blockdev --getsize64 %s' % dev))
     if size < 2 * HEAD:
         die('%s is %d bytes: too small for a data partition' % (dev, size))
-    return dev, size
+    nvram = su(serial, 'test -e /dev/block/by-name/darwin_nvram && echo yes || echo no') == 'yes'
+    return dev, size, 0 if nvram else TAIL
 
 
 def written_past(path, off):
@@ -132,7 +135,7 @@ def apfsck():
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def convert(serial, dev, size, backup_dir, empty_volume):
+def convert(serial, dev, size, tail_bytes, backup_dir, empty_volume):
     magic = su(serial, 'dd if=%s bs=4096 count=1 2>/dev/null | od -An -c -j32 -N4' % dev).split()
     if magic == ['N', 'X', 'S', 'B'] and not empty_volume:
         print('annfs-to-apfs: %s is APFS already, nothing to do' % dev, flush=True)
@@ -143,8 +146,9 @@ def convert(serial, dev, size, backup_dir, empty_volume):
     tail = os.path.join(backup_dir, 'darwin_var-tail-%s.img' % stamp)
     print('annfs-to-apfs: saving the first 512 MiB of %s to %s' % (dev, backup), flush=True)
     fetch(serial, 'dd if=%s of=%s bs=4194304 count=%d 2>/dev/null' % (dev, PHONE_TMP, HEAD // (4 * MIB)), backup, HEAD)
-    fetch(serial, 'dd if=%s of=%s bs=4096 skip=%d count=%d 2>/dev/null' % (dev, PHONE_TMP, (size - TAIL) // 4096,
-                                                                          TAIL // 4096), tail, TAIL)
+    if tail_bytes:
+        fetch(serial, 'dd if=%s of=%s bs=4096 skip=%d count=%d 2>/dev/null' % (
+            dev, PHONE_TMP, (size - tail_bytes) // 4096, tail_bytes // 4096), tail, tail_bytes)
     with open(backup, 'rb') as f:
         first = f.read(8)
         f.seek(32 * MIB)
@@ -156,11 +160,11 @@ def convert(serial, dev, size, backup_dir, empty_volume):
     empty = os.path.join(work, 'empty')
     image = os.path.join(work, 'apfs.img')
     os.makedirs(empty)
-    blocks = (size - TAIL) // 4096
+    blocks = (size - tail_bytes) // 4096
     subprocess.run([sys.executable, os.path.join(HERE, 'mkapfs.py'), '-o', image, '--blocks', str(blocks),
                     'Data=%s,role=data' % empty], check=True)
     if not empty_volume:
-        subprocess.run([tool(), 'annfs', image, backup, tail], check=True)
+        subprocess.run([tool(), 'annfs', image, backup] + ([tail] if tail_bytes else []), check=True)
     checker = apfsck()
     if checker is not None:
         if subprocess.run([checker, '-cw', image]).returncode != 0:
@@ -176,7 +180,8 @@ def convert(serial, dev, size, backup_dir, empty_volume):
     print('annfs-to-apfs: writing the new first 512 MiB', flush=True)
     put_head(serial, dev, patch)
     shutil.rmtree(work)
-    os.unlink(tail)
+    if tail_bytes:
+        os.unlink(tail)
     print('annfs-to-apfs: done; boot iOS.  To undo: %s --rollback %s' % (os.path.relpath(__file__), backup))
 
 
@@ -189,14 +194,14 @@ def main():
     args = ap.parse_args()
     if not args.serial:
         die('no phone named: --serial or ANDROID_SERIAL')
-    dev, size = find_partition(args.serial)
+    dev, size, tail_bytes = find_partition(args.serial)
     if args.rollback:
         if os.path.getsize(args.rollback) != HEAD:
             die('%s is not a saved first 512 MiB' % args.rollback)
         put_head(args.serial, dev, args.rollback)
         print('annfs-to-apfs: %s is as it was before' % dev, flush=True)
         return
-    convert(args.serial, dev, size, args.backup_dir, args.format)
+    convert(args.serial, dev, size, tail_bytes, args.backup_dir, args.format)
 
 
 if __name__ == '__main__':
