@@ -882,9 +882,12 @@ isp_lsc_from_flat(struct isp *isp, const struct annibale_camera_frame *f, const 
 	return true;
 }
 
-/* one module's part of a tuning file (tools/camtuning.py): its ranges, and where each range's values are */
+/*
+ * one module's part of a tuning file (tools/camtuning.py): its ranges, and where each range's values are;
+ * none at all where `may_be_empty' (a lens shading the tool cannot read from the file: no shading)
+ */
 static bool
-tune_set(const uint8_t **p, const uint8_t *end, struct isp_tune_set *set, size_t floats)
+tune_set(const uint8_t **p, const uint8_t *end, struct isp_tune_set *set, size_t floats, bool may_be_empty)
 {
 	uint32_t n;
 
@@ -893,6 +896,10 @@ tune_set(const uint8_t **p, const uint8_t *end, struct isp_tune_set *set, size_t
 	}
 	memcpy(&n, *p, 4);
 	*p += 4;
+	if (n == 0 && may_be_empty) {
+		set->lights = 0;
+		return true;
+	}
 	if (n == 0 || n > TUNE_LIGHTS) {
 		return false;
 	}
@@ -947,7 +954,8 @@ isp_load_tuning(struct isp *isp, const char *path)
 		end = p + st.st_size;
 		good = memcmp(p, "RWCISP02", 8) == 0;
 		p += 8;
-		good = good && tune_set(&p, end, &t->ccm, 9) && tune_set(&p, end, &t->lsc, 4 * LSC_W * LSC_H) && end - p >= 4;
+		good = good && tune_set(&p, end, &t->ccm, 9, false) && tune_set(&p, end, &t->lsc, 4 * LSC_W * LSC_H, true) &&
+		    end - p >= 4;
 		if (good) {
 			memcpy(&t->refs, p, 4);
 			p += 4;
@@ -1031,6 +1039,10 @@ isp_tune(struct isp *isp, float lux_index, float cct)
 	}
 	tune_blend(&t->ccm, lux_index, cct, 9, m);
 	isp_set_ccm(isp, m);
+	if (t->lsc.lights == 0) {
+		isp->lsc.on = false;
+		return;
+	}
 	tune_blend(&t->lsc, lux_index, cct, 4 * (size_t)grid, g);
 	for (int gy = 0; gy < LSC_H; gy++) {
 		for (int gx = 0; gx < LSC_W; gx++) {

@@ -874,6 +874,7 @@ ISP_HARNESS = r"""
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "camera_isp.h"
 
 enum { WIDTH = 2592, HEIGHT = 16, STRIDE = 3248 };
@@ -947,9 +948,36 @@ static void unknown_measurements(void) {
     assert(command.command == ANNIBALE_CAMERA_EXPOSURE && command.a > 0 && command.b >= known.gain_unity);
 }
 
+/* a V5 tuning (tools/camtuning.py): colour matrices and reference lights, no lens shading ranges */
+static void tuning_without_shading(void) {
+    char path[] = "/tmp/annibale-isp-XXXXXX";
+    int fd = mkstemp(path);
+    assert(fd >= 0);
+    const float ccm[9] = { 1.5f, -0.4f, -0.1f, -0.2f, 1.4f, -0.2f, -0.1f, -0.5f, 1.6f };
+    const float ref[3] = { 0.45f, 0.57f, 5000 };
+    const uint32_t one = 1, none = 0;
+    const float lux[2] = { 0, 999 }, cct[2] = { 1, 10000 };
+    assert(write(fd, "RWCISP02", 8) == 8);
+    assert(write(fd, &one, 4) == 4 && write(fd, lux, 8) == 8 && write(fd, &one, 4) == 4);
+    assert(write(fd, cct, 8) == 8 && write(fd, ccm, sizeof(ccm)) == sizeof(ccm));
+    assert(write(fd, &none, 4) == 4);
+    assert(write(fd, &one, 4) == 4 && write(fd, ref, sizeof(ref)) == sizeof(ref));
+    close(fd);
+    struct isp isp;
+    isp_init(&isp);
+    isp.lsc.on = true;
+    assert(isp_load_tuning(&isp, path));
+    unlink(path);
+    assert(isp.tuning->ccm.lights == 1 && isp.tuning->lsc.lights == 0 && isp.tuning->refs == 1);
+    isp_tune(&isp, 300, 5000);
+    assert(!isp.lsc.on);
+    isp_destroy(&isp);
+}
+
 int main(int argc, char **argv) {
     if (argc == 1 || strcmp(argv[1], "layout") == 0) raw_layout();
     if (argc == 1 || strcmp(argv[1], "unknown") == 0) unknown_measurements();
+    if (argc == 1 || strcmp(argv[1], "tuning") == 0) tuning_without_shading();
     return 0;
 }
 """

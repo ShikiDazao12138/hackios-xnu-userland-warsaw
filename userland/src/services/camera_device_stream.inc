@@ -525,10 +525,11 @@ af_frame(int device, struct af *af, const struct annibale_camera_frame *f, const
 static void
 load_tuning(struct isp *isp, uint32_t sensor)
 {
-	static const char *const names[] = { "ov02b10", "ov50e40", "ov20b", "ov50m" };
+	/* by sensor number (cameras[] in camera_device.c), as build.sh names the file of each tuning */
+	static const char *const names[] = { NULL, "ovx8000", "ov20b40" };
 	char path[96];
 
-	if (sensor >= sizeof(names) / sizeof(names[0])) {
+	if (sensor >= sizeof(names) / sizeof(names[0]) || names[sensor] == NULL) {
 		return;
 	}
 	snprintf(path, sizeof(path), "/annibale/fw/camera-%s.isp", names[sensor]);
