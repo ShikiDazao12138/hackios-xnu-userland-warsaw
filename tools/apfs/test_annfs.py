@@ -31,7 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import apfs                                                     # noqa: E402
 
-TOOL = os.path.join(ROOT, 'apfs-work', 'apfs-tool')
+TOOL = os.environ.get('APFS_TOOL') or os.path.join(ROOT, 'apfs-work', 'apfs-tool')     # APFS_TOOL: e.g. a release's build
 APFSCK = os.path.join(ROOT, 'xnu-deps', 'build', 'apfsprogs', 'apfsck', 'apfsck')
 MIB = 1 << 20
 PAGE = 16384

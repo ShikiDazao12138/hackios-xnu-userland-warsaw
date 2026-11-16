@@ -20,13 +20,15 @@ done
 mkdir -p "$(dirname "$OUT")"
 # TOOL_CFLAGS: more for the compiler, e.g. "-fsanitize=thread -g" with APFS_TOOL_THREADS
 TOOL_CFLAGS=${TOOL_CFLAGS:-}
-CRYPTO_FLAGS=""
-for prefix in /opt/homebrew/opt/openssl /usr/local/opt/openssl; do
-	if [ -d "$prefix/lib" ] && [ -d "$prefix/include" ]; then
-		CRYPTO_FLAGS="-I$prefix/include -L$prefix/lib"
-		break
-	fi
-done
+# SHA-256 (apfs_lib.c's SHA256()) comes from CommonCrypto on macOS and OpenSSL's libcrypto elsewhere.
+# TOOL_LIBS: the libraries; a release links them in statically on Linux (tools/release/build-all.sh)
+if [ "$(uname -s)" = Darwin ]; then
+	CRYPTO_FLAGS="-I$HERE/host-shim/commoncrypto"
+	TOOL_LIBS=${TOOL_LIBS:--lz}
+else
+	CRYPTO_FLAGS="-include $HERE/host-shim/linux/compat.h"
+	TOOL_LIBS=${TOOL_LIBS:--lz -lcrypto}
+fi
 OBJ=$(mktemp -d)
 trap 'rm -rf "$OBJ"' EXIT
 # (libdeflate as released compares signed with unsigned in a few places; -Wextra says so)
@@ -43,6 +45,10 @@ if [ -f "$XNUBSD/vfs/vfs_unicode.c" ] && [ -f "$XNUBSD/sys/unicode.h" ]; then
 	mkdir -p "$OBJ/inc/sys" "$OBJ/inc/libkern"
 	cp "$XNUBSD/sys/unicode.h" "$OBJ/inc/sys/unicode.h"
 	printf '#include <stdbool.h>\n#include <stdint.h>\n#include <stddef.h>\n#include <string.h>\n' > "$OBJ/inc/libkern/libkern.h"
+	if [ "$(uname -s)" != Darwin ]; then       # vfs_unicode.c takes only OS_FALLTHROUGH from it
+		mkdir -p "$OBJ/inc/os"
+		printf '#define OS_FALLTHROUGH __attribute__((fallthrough))\n' > "$OBJ/inc/os/base.h"
+	fi
 	cc -std=c11 -D_DEFAULT_SOURCE -DKERNEL_PRIVATE -O2 -w $TOOL_CFLAGS -I"$OBJ/inc" -I"$XNUBSD/vfs" -c -o "$OBJ/vfs_unicode.o" \
 		"$XNUBSD/vfs/vfs_unicode.c"
 	UNI="-DAPFS_HOST_UNICODE -DKERNEL_PRIVATE -I$OBJ/inc $OBJ/vfs_unicode.o"
@@ -51,5 +57,5 @@ else
 fi
 cc -std=c11 -D_DEFAULT_SOURCE -O2 -Wall -Wextra -Wno-unused-parameter -I"$SRC" -I"$HERE" \
 	$TOOL_CFLAGS $CRYPTO_FLAGS -o "$OUT" "$HERE"/apfs-tool.c "$HERE"/img.c "$HERE"/cmd_basic.c "$HERE"/cmd_census.c "$HERE"/cmd_cfrace.c "$HERE"/cmd_names.c "$HERE"/cmd_store.c "$HERE"/cmd_wfs.c "$HERE"/cmd_annfs.c "$SRC/apfs_lib.c" "$SRC/apfs_write.c" "$SRC/apfs_store.c" "$SRC/apfs_zbitmap.c" \
-	"$OBJ/apfs_deflate.o" $UNI -lz -lcrypto -pthread
+	"$OBJ/apfs_deflate.o" $UNI $TOOL_LIBS -pthread
 echo "build-tool.sh: $OUT (from $SRC)"

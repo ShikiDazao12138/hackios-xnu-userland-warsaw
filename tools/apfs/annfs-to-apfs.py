@@ -20,8 +20,10 @@ install, or starting over): every file on it is gone.  The first 512 MiB are sav
 --rollback writes a saved BACKUP back over the first 512 MiB: the partition is as it was before
 (ANNFS001 after a conversion).  Changes made under APFS since then are lost.
 
-Needs: adb, a C compiler with zlib and OpenSSL for apfs-tool (tools/apfs/build-tool.sh, run each
-time into apfs-work/), and about 600 MiB free here and on the phone's /data.  apfsck
+Needs: adb, apfs-tool, and about 600 MiB free here and on the phone's /data.  A release has
+apfs-tool built for macOS (arm64 and x86_64) and for Linux on x86_64 and aarch64 in
+tools/apfs/prebuilt/; anywhere else tools/apfs/build-tool.sh builds it into apfs-work/ each
+time, with a C compiler, zlib and (off macOS) OpenSSL.  apfsck
 (tools/apfs/build-apfsck.sh, which clones linux-apfs/apfsprogs the first time) checks the new
 container; without it the conversion goes on unchecked.
 """
@@ -29,6 +31,7 @@ import argparse
 import datetime
 import hashlib
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -125,6 +128,11 @@ def written_past(path, off):
 
 
 def tool():
+    system = platform.system()
+    name = 'apfs-tool-Darwin' if system == 'Darwin' else 'apfs-tool-%s-%s' % (system, platform.machine())
+    prebuilt = os.path.join(HERE, 'prebuilt', name)
+    if os.path.exists(prebuilt):
+        return prebuilt
     subprocess.run(['bash', os.path.join(HERE, 'build-tool.sh')], check=True, stdout=subprocess.DEVNULL)
     return TOOL
 
