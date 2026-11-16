@@ -171,6 +171,17 @@ file_write(void *ctx, uint64_t off, const void *buf, size_t len)
 	return 0;
 }
 
+static int
+file_flush(void *ctx)
+{
+	int fd = (int)(intptr_t)ctx;
+
+	if (write_fails && writes_done >= write_fail_after) {
+		return EIO;
+	}
+	return fsync(fd) == 0 ? 0 : EIO;
+}
+
 int
 open_image(const char *path, struct apfs_nx *nx, struct apfs_vol *vol)
 {
@@ -190,6 +201,7 @@ open_image(const char *path, struct apfs_nx *nx, struct apfs_vol *vol)
 	dev.read_data = file_read;      /* pread is as good without a lock as with one */
 	if (want_write) {
 		dev.write = file_write;
+		dev.flush = file_flush;
 	}
 
 	error = apfs_nx_open(nx, &dev);

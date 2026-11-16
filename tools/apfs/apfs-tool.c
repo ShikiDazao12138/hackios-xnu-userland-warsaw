@@ -16,6 +16,7 @@
  *        apfs-tool census IMAGE [PATH] [--meta]   (--meta: do not read contents)
  *        apfs-tool lookups IMAGE    (every name looked up by name; see cmd_lookups)
  *        apfs-tool writable IMAGE   (may the volume be written in place, and why not)
+ *        apfs-tool do     IMAGE [SCRIPT]   (operations of a writable volume: cmd_wfs.c)
  *        apfs-tool write  IMAGE PATH OFFSET FILE|- [--fail-after N | --corrupt-after N]
  *        apfs-tool store  info IMAGE | save IMAGE FILE|- | load IMAGE FILE|-
  *                                   (the store of fixed-length slot files: bsd/miscfs/apfs/apfs_store.c)
@@ -53,6 +54,7 @@ main(int argc, char **argv)
 		    "       apfs-tool census IMAGE [PATH] [--meta]\n"
 		    "       apfs-tool write  IMAGE PATH OFFSET FILE|- [--fail-after N | --corrupt-after N]\n"
 		    "       apfs-tool writable IMAGE\n"
+		    "       apfs-tool do     IMAGE [SCRIPT] [--fail-after N]\n"
 		    "       apfs-tool store  info IMAGE | save IMAGE FILE|- [NOTE] | load IMAGE FILE|-\n"
 		    "       apfs-tool lookups IMAGE\n"
 		    "       apfs-tool cfrace IMAGE [THREADS [ROUNDS]]\n"
@@ -79,17 +81,8 @@ main(int argc, char **argv)
 	if (strcmp(argv[1], "write") == 0 && argc > 5) {
 		return cmd_write(argv[2], argv[3], argv[4], argv[5]);
 	}
-	if (strcmp(argv[1], "write-file") == 0 && argc > 5) {
-		return cmd_write_file(argv[2], argv[3], argv[4], argv[5]);
-	}
-	if (strcmp(argv[1], "create") == 0 && argc > 3) {
-		return cmd_create(argv[2], argv[3], argc > 4 ? argv[4] : NULL);
-	}
-	if (strcmp(argv[1], "remove") == 0 && argc > 3) {
-		return cmd_remove(argv[2], argv[3]);
-	}
-	if (strcmp(argv[1], "setsize") == 0 && argc > 4) {
-		return cmd_setsize(argv[2], argv[3], argv[4]);
+	if (strcmp(argv[1], "do") == 0) {
+		return cmd_do(argv[2], argc > 3 ? argv[3] : NULL);
 	}
 	if (strcmp(argv[1], "writable") == 0) {
 		return cmd_writable(argv[2]);

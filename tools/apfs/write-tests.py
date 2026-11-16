@@ -897,85 +897,93 @@ def test_transaction():
     say(good, 'twenty transactions one after another, each one clean: both rings go round')
 
 
-def test_m2_ops():
-    """Milestone 2 native write operations: file growth, creation, removal, and sizing."""
-    base, img = fresh('m2-ops')
+def do(img, lines, fail_after=None):
+    """Lines of `apfs-tool do` (cmd_wfs.c): one transaction, committed at the end."""
+    argv = [TOOL] + (['--fail-after', str(fail_after)] if fail_after is not None else []) + ['do', img, '-']
+    p = subprocess.run(argv, input=('\n'.join(lines) + '\n').encode(), stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT)
+    out = p.stdout.decode('utf-8', 'replace')
+    res = []
+    for ln in out.splitlines():
+        if ln[:1].isdigit():
+            rest = ln.split(None, 2)[2]
+            res.append('ok' if rest == 'ok' or rest.startswith('ok ') else rest)
+    return p.returncode, out, res
 
-    # 1. File growth / extent allocation via Space Manager
-    grow_data = b'EXTENDED_DATA_BEYOND_OLD_EOF_' * 20
-    rc, out = run(TOOL, 'write-file', img, '/small', '5000', '-', input=grow_data)
-    say(rc == 0, 'write-file beyond EOF to /small at 5000: allocated blocks and committed')
-    ok, ck = read_apfsck(img)
-    say(ok, '  apfsck finds container consistent after file growth' + ('' if ok else ':\n' + ck))
-    data_read = read_tool_bytes(img, '/small')
-    say(data_read is not None and data_read[5000:5000 + len(grow_data)] == grow_data,
-        '  apfs-tool cat reads back extended file content accurately')
 
-    # 2. File creation & writing
-    rc, out = run(TOOL, 'create', img, '/m2_test.txt', '0644')
-    say(rc == 0, 'create new file /m2_test.txt')
-    new_data = b'Native APFS write support on HackiOS M2!\n' * 50
-    rc, out = run(TOOL, 'write-file', img, '/m2_test.txt', '0', '-', input=new_data)
-    say(rc == 0, 'write to newly created file /m2_test.txt')
-    ok, ck = read_apfsck(img)
-    say(ok, '  apfsck finds container consistent after file creation' + ('' if ok else ':\n' + ck))
-    read_back = read_tool_bytes(img, '/m2_test.txt')
-    say(read_back == new_data, '  read back matches written bytes for /m2_test.txt')
+def gen_bytes(seed, n):
+    """cmd_wfs.c's generator (xorshift64*), for the bytes a `write` line puts there."""
+    x, out, m = seed, bytearray(), (1 << 64) - 1
+    while len(out) < n:
+        x ^= x >> 12
+        x ^= (x << 25) & m
+        x ^= x >> 27
+        out += ((x * 0x2545F4914F6CDD1D) & m).to_bytes(8, 'little')
+    return bytes(out[:n])
 
-    # 3. Truncate / Set Size
-    rc, out = run(TOOL, 'setsize', img, '/m2_test.txt', '128')
-    say(rc == 0, 'setsize /m2_test.txt to 128 bytes')
-    ok, ck = read_apfsck(img)
-    say(ok, '  apfsck finds container consistent after setsize' + ('' if ok else ':\n' + ck))
-    read_trunc = read_tool_bytes(img, '/m2_test.txt')
-    say(read_trunc == new_data[:128], '  read back reflects truncated size (128 bytes)')
 
-    # Truncate to 0 (ftruncate(0))
-    rc, out = run(TOOL, 'setsize', img, '/m2_test.txt', '0')
-    say(rc == 0, 'setsize /m2_test.txt to 0 bytes')
-    ok, ck = read_apfsck(img)
-    say(ok, '  apfsck finds container consistent after setsize 0' + ('' if ok else ':\n' + ck))
-    read_zero = read_tool_bytes(img, '/m2_test.txt')
-    say(read_zero == b'', '  read back reflects 0 bytes')
+def test_wfs_ops():
+    """The operations of a writable volume (apfs_wops.inc), each case checked by apfsck and
+    the three readers; the random runs are test_wfs_random.py."""
+    base, img = fresh('wfs-ops')
 
-    # Multi-block allocation and extent freeing
-    multi_data = b'M' * (5 * BS)
-    rc, out = run(TOOL, 'write-file', img, '/m2_test.txt', '0', '-', input=multi_data)
-    say(rc == 0, 'write 5 blocks to /m2_test.txt')
-    ok, ck = read_apfsck(img)
-    say(ok, '  apfsck finds container consistent after multi-block write' + ('' if ok else ':\n' + ck))
+    rc, out, res = do(img, ['write /small 5000 11 600'])
+    want = read_py_bytes(base, '/small') + b'\0' * (5000 - (BS - 1)) + gen_bytes(11, 600)
+    say(rc == 0 and res == ['ok'], 'a write past the end of /small: the gap is a hole')
+    ok, ck = read_apfsck(img, crash=False)
+    say(ok, '  apfsck finds the container consistent' + ('' if ok else ':\n' + ck))
+    ok, why = all_agree(img, '/small', want)
+    say(ok, '  every reader reads the old bytes, zeroes and the new bytes' + ('' if ok else ': ' + why))
 
-    # 4. Remove file
-    rc, out = run(TOOL, 'remove', img, '/m2_test.txt')
-    say(rc == 0, 'remove /m2_test.txt')
-    ok, ck = read_apfsck(img)
-    say(ok, '  apfsck finds container consistent after remove' + ('' if ok else ':\n' + ck))
-    rc_stat, _ = run(TOOL, 'stat', img, '/m2_test.txt')
-    say(rc_stat != 0, '  removed file is no longer accessible via stat')
+    rc, out, res = do(img, ['create /new 0644', 'write /new 0 12 %d' % (5 * BS + 3), 'truncate /new 128',
+                            'truncate /new 70000', 'write /new 65536 13 10'])
+    want = gen_bytes(12, 128) + b'\0' * (65536 - 128) + gen_bytes(13, 10) + b'\0' * (70000 - 65546)
+    say(rc == 0 and res == ['ok'] * 5, 'create, write, cut to 128 bytes, grow to 70000, write inside the hole')
+    ok, ck = read_apfsck(img, crash=False)
+    say(ok, '  apfsck finds the container consistent' + ('' if ok else ':\n' + ck))
+    # 7-Zip reads a hole (an extent at physical block 0, as apfsck has it) from block 0 itself
+    got = {n: fn(img, '/new') for n, fn in READERS if n != '7-Zip'}
+    bad = [n for n, b in got.items() if b != want]
+    say(not bad, '  the tail cut off reads back as zeroes, not as what was there' +
+        ('' if not bad else ': ' + ', '.join(bad)))
 
-    # 5. Long filenames in a split B-tree (verifying btree_info footer max key/val sizes)
-    for i in range(35):
-        rc, _ = run(TOOL, 'create', img, f'/split_{i:02d}.txt', '0644')
-        assert rc == 0
-    ok, ck = read_apfsck(img)
-    say(ok, '  apfsck finds container consistent after splitting btree' + ('' if ok else ':\n' + ck))
-    name_50 = 'long_filename_exceeding_previous_max_key_50_bytes'
-    rc, _ = run(TOOL, 'create', img, '/' + name_50, '0644')
-    say(rc == 0, 'create 50-byte filename in split btree')
-    ok, ck = read_apfsck(img)
-    say(ok, '  apfsck finds container consistent after 50-byte name in split tree' + ('' if ok else ':\n' + ck))
-    name_255 = 'x' * 255
-    rc, _ = run(TOOL, 'create', img, '/' + name_255, '0644')
-    say(rc == 0, 'create 255-byte (NAME_MAX) filename in split btree')
-    ok, ck = read_apfsck(img)
-    say(ok, '  apfsck finds container consistent after 255-byte name in split tree' + ('' if ok else ':\n' + ck))
+    names = ['n%03d' % i for i in range(400)] + ['x' * 255, 'a_50_byte_filename_that_exceeds_previous_short_keys']
+    rc, out, res = do(img, ['mkdir /many 0755'] + ['create /many/%s 0644' % n for n in names])
+    say(rc == 0 and set(res) == {'ok'}, '402 names in one directory, the longest 255 bytes: the tree grows levels')
+    ok, ck = read_apfsck(img, crash=False)
+    say(ok, '  apfsck finds the container consistent' + ('' if ok else ':\n' + ck))
+    rc, out, res = do(img, ['unlink /many/%s' % n for n in names] + ['rmdir /many', 'unlink /new'])
+    say(rc == 0 and set(res) == {'ok'}, 'and all of them removed again, with the directory')
+    ok, ck = read_apfsck(img, crash=False)
+    say(ok, '  apfsck finds the container consistent: no node, block or count left over' +
+        ('' if ok else ':\n' + ck))
+
+    rc, out, res = do(img, ['create /dup 0644', 'create /dup 0644', 'mkdir /dup/x 0755', 'rmdir /sub',
+                            'write /small 18446744073709551615 1 2', 'link /sub /sublink',
+                            'create /' + 'y' * 256 + ' 0644'])
+    say(res == ['ok', 'File exists', 'Not a directory', 'Directory not empty', 'File too large',
+                'Operation not permitted', 'File name too long'],
+        'refused before any change: an existing name, a file as a directory, a full directory, '
+        'an offset past 2^64, a link to a directory, a 256-byte name: ' + ' / '.join(res))
+    ok, ck = read_apfsck(img, crash=False)
+    say(ok, '  apfsck finds the container consistent' + ('' if ok else ':\n' + ck))
+
+    for stop in range(0, 24):
+        img2 = os.path.join(WORK, 'wfs-cut.apfs')
+        shutil.copyfile(base, img2)
+        rc, out, res = do(img2, ['create /cut 0644', 'write /cut 0 14 9000', 'mkdir /cutdir 0755'], stop)
+        ok, ck = read_apfsck(img2, crash=False)
+        if not ok:
+            break
+    say(ok, 'the power out after each of the first 24 device writes of a transaction: the '
+        'container is sound every time' + ('' if ok else ' (after %d):\n%s' % (stop, ck)))
 
 
 TESTS = {
     'baseline': test_baseline,
     'transaction': test_transaction,
     'writes': test_writes,
-    'm2-ops': test_m2_ops,
+    'wfs-ops': test_wfs_ops,
     'refusals': test_refusals,
     'volume-gates': test_volume_gates,
     'extent-gates': test_extent_gates,
