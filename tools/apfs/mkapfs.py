@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Build an APFS container from directories: the port's own read-only volumes, as images.
 
-usage: mkapfs.py -o IMAGE [-z [--plain DIR]...] [--time SECONDS] [--slack BLOCKS] NAME=DIR[,manifest=FILE] [NAME=DIR ...]
+usage: mkapfs.py -o IMAGE [-z [--plain DIR]...] [--time SECONDS] [--slack BLOCKS | --blocks N]
+                 NAME=DIR[,manifest=FILE][,role=data] [NAME=DIR ...]
 
 Each NAME=DIR becomes one volume of the container (volume 0 first), case-sensitive and
 normalization-insensitive like the iOS volumes, unencrypted, read-only content laid out once.
@@ -21,6 +22,10 @@ volume its superblock, object map, file-system tree, extent-reference tree and a
 snapshot tree; then the files' data.  What the layout of the space manager has to be is
 taken from linux-apfs/apfsprogs' mkapfs (and checked with its apfsck, which has to find the
 image clean: tools/apfs/check-image.sh).  Hard links are not made: a name is a file.
+
+--blocks makes the container exactly N blocks, the free ones after the content (the data
+volume a partition is formatted with: tools/apfs/annfs-to-apfs.sh); role=data marks a volume
+as the data volume, as on an iPhone.
 """
 import argparse
 import concurrent.futures
@@ -37,6 +42,7 @@ XID = 1
 OID_NX = 1
 OID_RESERVED = 1024                     # the first object id that is not reserved
 ROOT_DIR_PARENT, ROOT_DIR_INO, PRIV_DIR_INO = 1, 2, 3
+VOL_ROLE_DATA = 0x40
 MIN_USER_INO = 16
 
 # object types
@@ -301,6 +307,7 @@ class Volume:
         self.streams = []               # (owning private id, bytes, is_rsrc) -- data to place
         self.counts = {'files': 0, 'dirs': 0, 'symlinks': 0}
         self.next_oid = MIN_USER_INO
+        self.role = 0                   # apfs_role: VOL_ROLE_DATA, or none
 
     def new_oid(self):
         oid = self.next_oid
@@ -579,10 +586,11 @@ def ip_fq_node_limit(chunks):
 
 
 class Container:
-    def __init__(self, volumes, slack, uuid_seed):
+    def __init__(self, volumes, slack, uuid_seed, blocks=None):
         self.vols = volumes
         self.slack = slack
         self.seed = uuid_seed
+        self.fixed = blocks
 
     def uuid(self, what):
         return hashlib.sha256((self.seed + what).encode()).digest()[:16]
@@ -592,6 +600,11 @@ class Container:
         checkpoint areas and of the space manager, which come before everything else."""
         for v in self.vols:
             v.collect()
+        if self.fixed is not None:
+            if self._layout(self.fixed) + self.slack > self.fixed:
+                raise SystemExit('mkapfs.py: the content does not fit in %d blocks' % self.fixed)
+            self.block_count = self.fixed
+            return
         guess = 1024
         while True:
             total = self._layout(guess)
@@ -737,7 +750,7 @@ class Container:
             struct.pack_into('<QQ', sb, 0x130, v.when, XID)
             nm = v.name.encode()[:255]
             sb[0x2c0:0x2c0 + len(nm)] = nm
-            struct.pack_into('<I', sb, 0x3c0, 3)                   # next document id
+            struct.pack_into('<IH', sb, 0x3c0, 3, v.role)          # next document id; role
             seal(sb, v.oid, VIRTUAL | T_FS)
             put(v.sb_bno, bytes(sb))
             for b in [v.sb_bno, v.omap_bno] + v.omap_addrs + v.fs_addrs + v.er_addrs + [v.snap_bno]:
@@ -907,7 +920,8 @@ def main():
     ap.add_argument('--plain', action='append', default=[], help='with -z: never compress what is under this directory')
     ap.add_argument('--time', type=int, default=1683900000, help='every timestamp, in seconds')
     ap.add_argument('--slack', type=int, default=256, help='free blocks to leave (at least)')
-    ap.add_argument('volumes', nargs='+', help='NAME=DIR[,manifest=FILE]')
+    ap.add_argument('--blocks', type=int, help='the container\'s size in blocks of 4 KiB')
+    ap.add_argument('volumes', nargs='+', help='NAME=DIR[,manifest=FILE][,role=data]')
     args = ap.parse_args()
     vols = []
     spool = open(args.output + '.spool', 'w+b') if args.compress else None
@@ -915,12 +929,19 @@ def main():
         name, _, rest = spec.partition('=')
         parts = rest.split(',')
         root = read_tree(parts[0])
+        role = 0
         for opt in parts[1:]:
             k, _, val = opt.partition('=')
             if k == 'manifest':
                 apply_manifest(root, val)
-        vols.append(Volume(i, name, root, args.compress, args.time * 1000000000, spool, args.plain))
-    c = Container(vols, args.slack, os.path.basename(args.output))
+            elif k == 'role' and val == 'data':
+                role = VOL_ROLE_DATA
+            else:
+                ap.error('unknown volume option %s' % opt)
+        v = Volume(i, name, root, args.compress, args.time * 1000000000, spool, args.plain)
+        v.role = role
+        vols.append(v)
+    c = Container(vols, args.slack, os.path.basename(args.output), args.blocks)
     c.layout()
     free = c.write(args.output)
     if spool is not None:

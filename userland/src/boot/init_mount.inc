@@ -185,20 +185,27 @@ read_whole(const char *path, char *buf, size_t size)
 	return (ssize_t)got;
 }
 
+/*
+ * darwin_var holds an APFS container (block 0: "NXSB" at byte 32), as tools/apfs/annfs-to-apfs.py
+ * leaves it.  Without a darwin_var partition /dev/rdisk1s2 is the system's, so that is asked first.
+ */
 static int
-has_bootarg(const char *args, const char *wanted)
+var_is_apfs(void)
 {
-	size_t len = strlen(wanted);
-	while (*args) {
-		while (*args == ' ' || *args == '\t') args++;
-		const char *end = args;
-		while (*end && *end != ' ' && *end != '\t') end++;
-		if ((size_t)(end - args) == len && memcmp(args, wanted, len) == 0) {
-			return 1;
-		}
-		args = end;
+	static unsigned char blk[4096];
+	unsigned long long var_bytes = 0;
+	size_t len = sizeof(var_bytes);
+	int fd, is = 0;
+
+	if (sysctlbyname("kern.annibale.darwin_var_bytes", &var_bytes, &len, NULL, 0) != 0 || var_bytes == 0) {
+		return 0;
 	}
-	return 0;
+	fd = open("/dev/rdisk1s2", O_RDONLY, 0);
+	if (fd >= 0) {
+		is = pread(fd, blk, sizeof(blk), 0) == (ssize_t)sizeof(blk) && memcmp(blk + 32, "NXSB", 4) == 0;
+		close(fd);
+	}
+	return is;
 }
 
 static int
@@ -210,22 +217,14 @@ mount_writable(void)
 	int ok = 0, fd, made = 0, files = 0;
 	const char *jb;
 	struct stat st;
-	char bootargs[1024];
-	size_t ba_len = sizeof(bootargs) - 1;
-	int use_apfs = 0;
 
 	printf("\n-- writable filesystem --\n");
-	if (sysctlbyname("kern.bootargs", bootargs, &ba_len, NULL, 0) == 0) {
-		bootargs[ba_len < sizeof(bootargs) ? ba_len : sizeof(bootargs) - 1] = '\0';
-		use_apfs = has_bootarg(bootargs, "var_apfs=1");
-	}
-
-	if (use_apfs) {
+	if (var_is_apfs()) {
 		ok = mount("apfs", "/private/var", 0, (void *)"/dev/disk1s2") == 0;
 		if (ok) {
-			printf("  mounted native APFS data volume on /private/var (/dev/disk1s2)\n");
+			printf("  mounted the APFS data volume on /private/var (/dev/disk1s2)\n");
 		} else {
-			printf("  native APFS candidate mount failed: %s\n", strerror(errno));
+			printf("  mount of the APFS data volume (/dev/disk1s2): %s\n", strerror(errno));
 		}
 	} else {
 		ok = mount("ramfs", "/private/var", 0, NULL) == 0;
@@ -377,8 +376,33 @@ mount_writable(void)
 }
 
 /*
- * Finalize the persistent /private/var data volume mounted from darwin_var (ANNFS001): ensure
- * essential directories exist, propagate global preferences, and sync the volume metadata.
+ * The panic log of the run before: the kernel keeps it past the APFS container until it is
+ * copied here (kern.annibale.panic_log; with ANNFS001 the mount copies it itself).
+ */
+static void
+keep_panic_log(void)
+{
+	static char buf[256 * 1024];    /* loader_return.c writes at most this much (LOADER_PANIC_BUF_SIZE) */
+	size_t len = sizeof(buf);
+	int kept = 1, fd;
+
+	if (sysctlbyname("kern.annibale.panic_log", buf, &len, NULL, 0) != 0 || len == 0) {
+		return;
+	}
+	fd = open("/private/var/db/panic.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0) {
+		return;
+	}
+	if (write(fd, buf, len) == (ssize_t)len && fsync(fd) == 0 &&
+	    sysctlbyname("kern.annibale.panic_log", NULL, NULL, &kept, sizeof(kept)) == 0) {
+		printf("  the panic log of the run before is in /private/var/db/panic.log (%zu bytes)\n", len);
+	}
+	close(fd);
+}
+
+/*
+ * Finalize the persistent /private/var data volume mounted from darwin_var (APFS or ANNFS001):
+ * ensure essential directories exist, propagate global preferences, and sync the volume metadata.
  */
 static void
 restore_var(void)
@@ -406,6 +430,7 @@ restore_var(void)
 	mkdir("/private/var/root", 0750);
 	mkdir("/private/var/root/Library", 0750);
 	mkdir("/private/var/root/Library/Preferences", 0750);
+	keep_panic_log();
 	{
 		struct stat gp_st;
 		if (stat("/private/var/mobile/Library/Preferences/.GlobalPreferences.plist", &gp_st) == 0 && gp_st.st_size > 0) {

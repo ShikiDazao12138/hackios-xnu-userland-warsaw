@@ -40,7 +40,7 @@ int host_parallel(void *ctx, uint32_t items, uint32_t workers,
 void op_begin(void);
 void op_end(void);
 
-/* the commands, one file each: cmd_basic.c, cmd_census.c, cmd_cfrace.c, cmd_names.c, cmd_store.c, cmd_wfs.c */
+/* the commands, one file each: cmd_annfs.c, cmd_basic.c, cmd_census.c, cmd_cfrace.c, cmd_names.c, cmd_store.c, cmd_wfs.c */
 int cmd_info(const char *path);
 int cmd_ls(const char *path, const char *where);
 int cmd_stat(const char *path, const char *where);
@@ -52,6 +52,7 @@ int cmd_lookupnames(const char *path, const char *list);
 int cmd_lookups(const char *path);
 int cmd_write(const char *path, const char *in_path, const char *at_str, const char *from);
 int cmd_do(const char *path, const char *script);
+int cmd_annfs(const char *path, const char *head_path, const char *tail_path);
 int cmd_writable(const char *path);
 int cmd_store_info(const char *path);
 int cmd_store_save(const char *path, const char *from, uint64_t note);
