@@ -120,14 +120,15 @@ static int reboot(int flags) { assert(flags == RB_HALT); halts++; return -1; }
 SCENARIOS = r'''
 int main(void) {
     const int errors[] = { EIO, ENXIO, ENOSPC, 0 };
-    for (unsigned k = 0; k < 2 * sizeof(errors)/sizeof(errors[0]); k++) {
-        unsigned i = k % (sizeof(errors)/sizeof(errors[0]));
-        var_apfs = k >= sizeof(errors)/sizeof(errors[0]);
+    /* 1. darwin_var present and formatted as APFS: mounts APFS or halts on mount error */
+    var_bytes = 104ULL << 30;
+    var_apfs = 1;
+    for (unsigned i = 0; i < sizeof(errors)/sizeof(errors[0]); i++) {
         mount_error = errors[i]; checks = failures = skeleton_reads = restores = processes = rc_runs = halts = 0;
         apfs_mounts = ramfs_mounts = 0;
         int result = startup();
         assert(halts == 1 && !raw_open);
-        assert(apfs_mounts == var_apfs && ramfs_mounts == !var_apfs);
+        assert(apfs_mounts == 1 && ramfs_mounts == 0);
         if (mount_error) {
             assert(result == 1 && failures == 1);
             assert(!skeleton_reads && !restores && !processes && !rc_runs);
@@ -136,11 +137,34 @@ int main(void) {
             assert(skeleton_reads == 1 && restores == 1 && processes == 1 && rc_runs == 1);
         }
     }
-    /* no darwin_var: /dev/rdisk1s2 is the system's and is not read */
-    var_bytes = 0; var_apfs = 1; mount_error = 0; apfs_mounts = ramfs_mounts = 0;
-    assert(startup() == 0 && ramfs_mounts == 1 && apfs_mounts == 0);
-    puts("PASS: init data mount failures stop seed/processes/rc; successful mount continues; "
-         "APFS when block 0 is a container's, ramfs otherwise");
+    /* 2. darwin_var present and NOT APFS (legacy ANNFS001 or unformatted): refuses ramfs and halts */
+    var_bytes = 104ULL << 30;
+    var_apfs = 0;
+    mount_error = 0; checks = failures = skeleton_reads = restores = processes = rc_runs = halts = 0;
+    apfs_mounts = ramfs_mounts = 0;
+    assert(startup() == 1 && halts == 1 && !raw_open);
+    assert(apfs_mounts == 0 && ramfs_mounts == 0 && failures == 1);
+    assert(!skeleton_reads && !restores && !processes && !rc_runs);
+
+    /* 3. Memory-only boot without darwin_var or root_apfs: mounts pure in-memory ramfs */
+    var_bytes = 0; var_apfs = 0; mount_error = 0;
+    checks = failures = skeleton_reads = restores = processes = rc_runs = halts = 0;
+    apfs_mounts = ramfs_mounts = 0;
+    assert(startup() == 0 && halts == 1 && !raw_open);
+    assert(ramfs_mounts == 1 && apfs_mounts == 0 && failures == 0);
+    assert(skeleton_reads == 1 && restores == 1 && processes == 1 && rc_runs == 1);
+
+    /* 4. Flash-root boot (root_apfs=) with missing darwin_var: refuses volatile ramfs and halts */
+    kernel_bootargs = "debug=0x10e init_selftest=1 root_apfs=ufs_darwin";
+    var_bytes = 0; var_apfs = 0; mount_error = 0;
+    checks = failures = skeleton_reads = restores = processes = rc_runs = halts = 0;
+    apfs_mounts = ramfs_mounts = 0;
+    assert(startup() == 1 && halts == 1 && !raw_open);
+    assert(apfs_mounts == 0 && ramfs_mounts == 0 && failures == 1);
+    assert(!skeleton_reads && !restores && !processes && !rc_runs);
+
+    puts("PASS: init requires APFS on persistent darwin_var, halts with migration notice on non-APFS, "
+         "and mounts ramfs only on memory-only runs");
     return 0;
 }
 '''
@@ -161,7 +185,8 @@ def main():
     mutations = {
         'mount failure falls through to seed': ('\tif (!ok) {\n\t\treturn 0;\n\t}', ''),
         'caller ignores mount failure': ('if (!mount_writable())', 'if ((mount_writable(), 0))'),
-        'block 0 ignored': ('if (var_is_apfs()) {', 'if ((var_is_apfs(), 0)) {'),
+        'block 0 ignored': ('if (kind > 0) {', 'if ((void)kind, 0) {'),
+        'non-apfs darwin_var falls back to ramfs': ('} else if (kind == 0) {', '} else if (1) {'),
     }
     with tempfile.TemporaryDirectory(prefix='init-data-mount-') as temporary:
         cfile, binary = Path(temporary) / 'test.c', Path(temporary) / 'test'

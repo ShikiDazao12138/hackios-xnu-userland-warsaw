@@ -187,7 +187,9 @@ read_whole(const char *path, char *buf, size_t size)
 
 /*
  * darwin_var holds an APFS container (block 0: "NXSB" at byte 32), as tools/apfs/annfs-to-apfs.py
- * leaves it.  Without a darwin_var partition /dev/rdisk1s2 is the system's, so that is asked first.
+ * leaves it.  Returns 1 when darwin_var is an APFS container, 0 on memory-only runs without a
+ * darwin_var partition or flash root, and -1 when a persistent data volume is expected but block 0
+ * is not an APFS container.
  */
 static int
 var_is_apfs(void)
@@ -198,14 +200,14 @@ var_is_apfs(void)
 	int fd, is = 0;
 
 	if (sysctlbyname("kern.annibale.darwin_var_bytes", &var_bytes, &len, NULL, 0) != 0 || var_bytes == 0) {
-		return 0;
+		return boot_arg("root_apfs") != NULL ? -1 : 0;
 	}
 	fd = open("/dev/rdisk1s2", O_RDONLY, 0);
 	if (fd >= 0) {
 		is = pread(fd, blk, sizeof(blk), 0) == (ssize_t)sizeof(blk) && memcmp(blk + 32, "NXSB", 4) == 0;
 		close(fd);
 	}
-	return is;
+	return is ? 1 : -1;
 }
 
 static int
@@ -214,23 +216,27 @@ mount_writable(void)
 	static char skeleton[16384];
 	static const char *const markers[] = { "/private/var/db/diagnostics/.migrated",
 		                               "/private/var/db/diagnostics/timesync/.migrated", "/private/var/db/uuidtext/.migrated" };
-	int ok = 0, fd, made = 0, files = 0;
+	int ok = 0, kind, fd, made = 0, files = 0;
 	const char *jb;
 	struct stat st;
 
 	printf("\n-- writable filesystem --\n");
-	if (var_is_apfs()) {
+	kind = var_is_apfs();
+	if (kind > 0) {
 		ok = mount("apfs", "/private/var", 0, (void *)"/dev/disk1s2") == 0;
 		if (ok) {
 			printf("  mounted the APFS data volume on /private/var (/dev/disk1s2)\n");
 		} else {
 			printf("  mount of the APFS data volume (/dev/disk1s2): %s\n", strerror(errno));
 		}
-	} else {
+	} else if (kind == 0) {
 		ok = mount("ramfs", "/private/var", 0, NULL) == 0;
 		if (!ok) {
 			printf("  mount: %s\n", strerror(errno));
 		}
+	} else {
+		printf("  darwin_var is not formatted as APFS; run python3 hackios-xnu-userland/tools/apfs/annfs-to-apfs.py to migrate (or --format for an empty volume)\n");
+		ok = 0;
 	}
 	check(ok, "mount the persistent data volume on /private/var");
 	if (!ok) {
@@ -376,8 +382,8 @@ mount_writable(void)
 }
 
 /*
- * The panic log of the run before: the kernel keeps it past the APFS container until it is
- * copied here (kern.annibale.panic_log; with ANNFS001 the mount copies it itself).
+ * The panic log of the run before: the kernel keeps it in darwin_nvram until it is
+ * copied here (kern.annibale.panic_log).
  */
 static void
 keep_panic_log(void)
@@ -401,21 +407,14 @@ keep_panic_log(void)
 }
 
 /*
- * Finalize the persistent /private/var data volume mounted from darwin_var (APFS or ANNFS001):
- * ensure essential directories exist, propagate global preferences, and sync the volume metadata.
+ * Finalize the persistent /private/var data volume:
+ * ensure essential directories exist, propagate global preferences, and sync the volume.
  */
 static void
 restore_var(void)
 {
-	int disk_loaded = 0, vfd;
-	size_t len = sizeof(disk_loaded);
+	int vfd;
 
-	if (sysctlbyname("kern.annibale.var_disk_loaded", &disk_loaded, &len, NULL, 0) == 0 && disk_loaded != 0) {
-		printf("\n-- the data volume of the last boot --\n");
-		printf("  /private/var loaded directly from persistent disk (ANNFS001)\n");
-	}
-
-	/* Ensure essential directories exist even when loaded directly from persistent disk */
 	mkdir("/private/var/mobile/Library/SyncedPreferences", 0755);
 	chown("/private/var/mobile/Library/SyncedPreferences", 501, 501);
 	mkdir("/private/var/mobile/Library/Weather", 0755);
@@ -440,9 +439,6 @@ restore_var(void)
 			    "/private/var/root/Library/Preferences/.GlobalPreferences.plist", 0644, 0, 0);
 		}
 	}
-
-	int seed_done = 1;
-	(void)sysctlbyname("kern.annibale.var_seed_done", NULL, NULL, &seed_done, sizeof(seed_done));
 
 	vfd = open("/private/var", O_RDONLY | O_DIRECTORY, 0);
 	if (vfd >= 0) {
