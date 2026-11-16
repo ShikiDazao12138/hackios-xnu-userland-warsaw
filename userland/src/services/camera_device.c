@@ -293,7 +293,7 @@ static const struct prop stream_props[] = {
 	{ "FaceDetectionConfiguration", "Collection", "ReadWrite" },
 	{ "VideoRecordingInProgress", "Boolean", "ReadWrite" }, { "MemoryPoolID", "Number", "ReadWrite" },
 	{ "ChromaNoiseReductionEnabled", "Boolean", "ReadWrite" }, { "TemporalNoiseReductionEnabled", "Boolean", "ReadWrite" },
-	{ "MultipleOutputSupportEnabled", "Boolean", "ReadWrite" }, { "VideoOutputsColorInfo", "Collection", "ReadWrite" },
+	{ "MultipleOutputSupportEnabled", "Boolean", "ReadWrite" }, { "VideoOutputsColorInfo", "Collection", "ReadOnly" },
 	{ "RegionOfInterestForCameraControls", "Collection", "ReadWrite" }, { "AEMeteringMode", "Number", "ReadWrite" },
 	{ "MaxFrameCoalescingDuration", "Number", "ReadWrite" }, { "LimitAERange", "Boolean", "ReadWrite" },
 	{ "TimeMachineSuspendNow", "Boolean", "WriteOnly" }, { "TimeMachineResumeNow", "Boolean", "WriteOnly" },
@@ -353,6 +353,26 @@ static const char *const output_names[OUTPUTS] = {
 	"PrimaryScaler", "SecondaryScaler", "StillImage",
 	"StillImageQuadra", "StillImageRaw", "Depth"
 };
+#define PICTURE_OUTPUTS 4               /* the first four: YCbCr pictures, of colour_attachments() */
+
+/* sRGB as CMCapture tags it (AVCaptureColorSpace_sRGB): BT.709 primaries and transfer, BT.601 matrix */
+static CFDictionaryRef
+colour_attachments(void)
+{
+	static CFDictionaryRef attachments;
+	static dispatch_once_t once;
+
+	dispatch_once(&once, ^{
+		const void *keys[] = { kCVImageBufferColorPrimariesKey, kCVImageBufferYCbCrMatrixKey,
+		    kCVImageBufferTransferFunctionKey };
+		const void *values[] = { kCVImageBufferColorPrimaries_ITU_R_709_2, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
+		    kCVImageBufferTransferFunction_ITU_R_709_2 };
+
+		attachments = CFDictionaryCreate(NULL, keys, values, 3, &kCFTypeDictionaryKeyCallBacks,
+		    &kCFTypeDictionaryValueCallBacks);
+	});
+	return attachments;
+}
 
 #define MAX_ZOOM                16      /* (the most the iPhone's wide camera zooms digitally) */
 /*
@@ -381,7 +401,6 @@ enum camera_stream_state {
 struct stream {
 	CFArrayRef      formats;
 	CFDictionaryRef supported;
-	CFDictionaryRef colour_info;    /* from VideoOutputsColorInfo */
 	CFDictionaryRef face_config;    /* from FaceDetectionConfiguration */
 	CFDictionaryRef meta_config;    /* from VideoOutputConfigurations["Metadata"] */
 	CFDictionaryRef metadata;       /* the last frame's (frame_metadata()), for a buffer that has none of its own */
@@ -549,9 +568,17 @@ stream_copy_property(CMBaseObjectRef o, CFStringRef key, CFAllocatorRef allocato
 		pthread_mutex_unlock(&s->lock);
 		value = d;
 	} else if (key_is(key, "VideoOutputsColorInfo")) {
-		pthread_mutex_lock(&s->lock);
-		value = s->colour_info != NULL ? CFRetain(s->colour_info) : new_dict();
-		pthread_mutex_unlock(&s->lock);
+		/*
+		 * The colour of each picture output, as its buffers' attachments: BWMultiStreamCameraSourceNode
+		 * compares a still image output's with the colour space it asked for before it makes its buffer
+		 * pools, and the session does not start when they differ.
+		 */
+		CFMutableDictionaryRef d = (CFMutableDictionaryRef)new_dict();
+
+		for (int i = 0; i < PICTURE_OUTPUTS; i++) {
+			put(d, output_names[i], CFRetain(colour_attachments()));
+		}
+		value = d;
 	} else if (key_is(key, "SupportedPropertiesDictionary")) {
 		value = CFRetain(s->supported);
 	} else if (key_is(key, "MaxZoomFactor")) {
@@ -771,15 +798,6 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 		s->stills_wanted++;
 		pthread_mutex_unlock(&s->lock);
 		say_once("stream: a photograph asked for", key, value);
-		return 0;
-	}
-	if (key_is(key, "VideoOutputsColorInfo")) {
-		pthread_mutex_lock(&s->lock);
-		if (s->colour_info != NULL) {
-			CFRelease(s->colour_info);
-		}
-		s->colour_info = value != NULL && CFGetTypeID(value) == CFDictionaryGetTypeID() ? CFRetain(value) : NULL;
-		pthread_mutex_unlock(&s->lock);
 		return 0;
 	}
 	if (key_is(key, "FaceDetectionConfiguration")) {

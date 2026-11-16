@@ -252,10 +252,7 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 		    (double)(mach_absolute_time() - began) * tb.numer / tb.denom / 1e6);
 	}
 	CVPixelBufferUnlockBaseAddress(pb, 0);
-	CVBufferSetAttachment(pb, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_601_4, kCVAttachmentMode_ShouldPropagate);
-	CVBufferSetAttachment(pb, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, kCVAttachmentMode_ShouldPropagate);
-	CVBufferSetAttachment(pb, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_709_2,
-	    kCVAttachmentMode_ShouldPropagate);
+	CVBufferSetAttachments(pb, colour_attachments(), kCVAttachmentMode_ShouldPropagate);
 
 	if (metadata != NULL) {
 		CFMutableDictionaryRef m = CFDictionaryCreateMutableCopy(NULL, 0, metadata);
@@ -853,9 +850,6 @@ stream_finalize(CMBaseObjectRef o)
 	}
 	if (s->supported) {
 		CFRelease(s->supported);
-	}
-	if (s->colour_info) {
-		CFRelease(s->colour_info);
 	}
 	if (s->face_config) {
 		CFRelease(s->face_config);

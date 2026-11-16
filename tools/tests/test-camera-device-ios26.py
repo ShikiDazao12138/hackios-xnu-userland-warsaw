@@ -684,6 +684,18 @@ int main(void) {
     double pixel_um = 0;
     assert(CFNumberGetValue(pixel_size, kCFNumberDoubleType, &pixel_um) && pixel_um > 0 && pixel_um < 100);
     CFRelease(pixel_size);
+    /*
+     * BWMultiStreamCameraSourceNode does not make its buffer pools when a still image output's colour
+     * info differs from its colour space; the stream reports the attachments its buffers carry.
+     */
+    CFDictionaryRef colour = NULL;
+    assert(stream_copy_property(front, CFSTR("VideoOutputsColorInfo"), kCFAllocatorDefault, &colour) == 0);
+    CFDictionaryRef still_colour = CFDictionaryGetValue(colour, CFSTR("StillImage"));
+    assert(still_colour != NULL && CFEqual(still_colour, colour_attachments()));
+    assert(CFEqual(CFDictionaryGetValue(still_colour, kCVImageBufferColorPrimariesKey), kCVImageBufferColorPrimaries_ITU_R_709_2));
+    assert(CFEqual(CFDictionaryGetValue(still_colour, kCVImageBufferYCbCrMatrixKey), kCVImageBufferYCbCrMatrix_ITU_R_601_4));
+    assert(CFDictionaryGetValue(colour, CFSTR("StillImageRaw")) == NULL);
+    CFRelease(colour);
 
     struct annibale_camera_profile back_profile = fixture;
     back_profile.sensor = 1;

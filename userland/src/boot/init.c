@@ -1011,7 +1011,7 @@ main(int argc, char **argv, char **envp)
 		setup_disk_dev_nodes();
 	}
 	/*
-	 * CMCapture's V57 resources with the ISP-dependent rendering of the camera formats turned off
+	 * CMCapture's V57 resources with the camera features that need an iPhone's ISP turned off
 	 * (mkcameraresources.py). The image holds the whole directory: NSBundle lists a directory to
 	 * find a resource in it, and a union mount lists only its upper layer.
 	 */
