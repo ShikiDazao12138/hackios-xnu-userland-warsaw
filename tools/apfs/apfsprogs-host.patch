@@ -1,0 +1,181 @@
+Changes to linux-apfs/apfsprogs (GPL-2.0) at 1bd1c1c2 for the checks of tools/apfs; this patch
+is under GPL-2.0 as well.  build-apfsck.sh applies it.
+
+- macOS: blocks are read with pread into memory (mmap at a 4 KiB offset fails where pages are
+  16 KiB), and apfsck builds with the two Linux headers it includes, in include/linux/.
+- Protection class 7 (CX, PROTECTION_CLASS_CX in xnu's sys/content_protection.h) is valid: iOS
+  gives it to files of /private/var.
+
+diff --git a/apfsck/apfsck.h b/apfsck/apfsck.h
+index 271820a..88e9efa 100644
+--- a/apfsck/apfsck.h
++++ b/apfsck/apfsck.h
+@@ -32,22 +32,6 @@ extern __attribute__((noreturn)) void system_error(void);
+ #include <apfs/raw.h>
+ #include <apfs/types.h>
+ 
+-/* Forwards the mmap() call to the proper device of a fusion drive */
+-static inline void *apfs_mmap(void *addr, size_t length, int prot, int flags, u64 offset)
+-{
+-	/*
+-	 * TODO: check that the block is in the correct device for all callers
+-	 * where that is known.
+-	 */
+-	if (offset >= APFS_FUSION_TIER2_DEVICE_BYTE_ADDR) {
+-		if (fd_tier2 == -1)
+-			report(NULL, "Address in missing tier 2 device.");
+-		offset -= APFS_FUSION_TIER2_DEVICE_BYTE_ADDR;
+-		return mmap(addr, length, prot, flags, fd_tier2, (off_t)offset);
+-	}
+-	return mmap(addr, length, prot, flags, fd_main, (off_t)offset);
+-}
+-
+ /* Forwards the pread() call to the proper device of a fusion drive */
+ static inline ssize_t apfs_pread(void *buf, size_t count, u64 offset)
+ {
+@@ -64,4 +48,28 @@ static inline ssize_t apfs_pread(void *buf, size_t count, u64 offset)
+ 	return pread(fd_main, buf, count, (off_t)offset);
+ }
+ 
++/* Portable block reading buffer, free from OS page size alignment constraints */
++static inline void *apfs_mmap(void *addr, size_t length, int prot, int flags, u64 offset)
++{
++	(void)addr; (void)prot; (void)flags;
++	void *buf = malloc(length);
++	if (!buf)
++		return MAP_FAILED;
++	ssize_t n = apfs_pread(buf, length, offset);
++	if (n < 0 || (size_t)n < length) {
++		free(buf);
++		return MAP_FAILED;
++	}
++	return buf;
++}
++
++static inline int apfs_munmap(void *addr, size_t length)
++{
++	(void)length;
++	if (addr != NULL && addr != MAP_FAILED)
++		free(addr);
++	return 0;
++}
++#define munmap apfs_munmap
++
+ #endif	/* _APFSCK_H */
+diff --git a/apfsck/extents.c b/apfsck/extents.c
+index 2ca1711..06f5dc0 100644
+--- a/apfsck/extents.c
++++ b/apfsck/extents.c
+@@ -294,8 +294,11 @@ static void verify_dstream_info_hash(struct listed_hash *info, struct dstream *d
+ 		if (fext_tree_lookup(dstream->d_id, info->addr + i * sb->s_blocksize, &bno))
+ 			report("Fext tree", "query failed.");
+ 
+-		if (bno == 0) /* A hole */
+-			block = mmap(NULL, sb->s_blocksize, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++		if (bno == 0) { /* A hole */
++			block = calloc(1, sb->s_blocksize);
++			if (!block)
++				block = MAP_FAILED;
++		}
+ 		else
+ 			block = apfs_mmap(NULL, sb->s_blocksize, PROT_READ, MAP_PRIVATE, bno * sb->s_blocksize);
+ 		if (block == MAP_FAILED)
+diff --git a/apfsck/inode.c b/apfsck/inode.c
+index 7ee9d24..54c16df 100644
+--- a/apfsck/inode.c
++++ b/apfsck/inode.c
+@@ -926,7 +926,8 @@ void parse_inode_record(struct apfs_inode_key *key,
+ 		report("Inode record", "not a clone but changed private id.");
+ 
+ 	def_prot_class = le32_to_cpu(val->default_protection_class);
+-	if (def_prot_class > APFS_PROTECTION_CLASS_F || def_prot_class == 5)
++	/* 7: class CX, which iOS gives files (PROTECTION_CLASS_CX in xnu's sys/content_protection.h) */
++	if ((def_prot_class > APFS_PROTECTION_CLASS_F && def_prot_class != 7) || def_prot_class == 5)
+ 		report("Inode record", "invalid default protection class");
+ 
+ 	bsd_flags = le32_to_cpu(val->bsd_flags);
+diff --git a/apfsck/super.c b/apfsck/super.c
+index 317da81..1182864 100644
+--- a/apfsck/super.c
++++ b/apfsck/super.c
+@@ -75,8 +75,8 @@ static struct apfs_nx_superblock *read_super_copy(void)
+ 	 */
+ 	bsize_tmp = APFS_NX_DEFAULT_BLOCK_SIZE;
+ 
+-	msb_raw = mmap(NULL, bsize_tmp, PROT_READ, MAP_PRIVATE,
+-		       fd_main, APFS_NX_BLOCK_NUM * bsize_tmp);
++	msb_raw = apfs_mmap(NULL, bsize_tmp, PROT_READ, MAP_PRIVATE,
++		       APFS_NX_BLOCK_NUM * bsize_tmp);
+ 	if (msb_raw == MAP_FAILED)
+ 		system_error();
+ 
+@@ -89,8 +89,8 @@ static struct apfs_nx_superblock *read_super_copy(void)
+ 	if (sb->s_blocksize != bsize_tmp) {
+ 		munmap(msb_raw, bsize_tmp);
+ 
+-		msb_raw = mmap(NULL, sb->s_blocksize, PROT_READ, MAP_PRIVATE,
+-			       fd_main, APFS_NX_BLOCK_NUM * sb->s_blocksize);
++		msb_raw = apfs_mmap(NULL, sb->s_blocksize, PROT_READ, MAP_PRIVATE,
++			       APFS_NX_BLOCK_NUM * sb->s_blocksize);
+ 		if (msb_raw == MAP_FAILED)
+ 			system_error();
+ 	}
+@@ -119,8 +119,8 @@ static struct apfs_nx_superblock *read_latest_super(u64 base, u32 blocks)
+ 	for (bno = base; bno < base + blocks; ++bno) {
+ 		struct apfs_nx_superblock *current;
+ 
+-		current = mmap(NULL, sb->s_blocksize, PROT_READ, MAP_PRIVATE,
+-			       fd_main, bno * sb->s_blocksize);
++		current = apfs_mmap(NULL, sb->s_blocksize, PROT_READ, MAP_PRIVATE,
++			       bno * sb->s_blocksize);
+ 		if (current == MAP_FAILED)
+ 			system_error();
+ 
+diff --git a/include/linux/fs.h b/include/linux/fs.h
+new file mode 100644
+index 0000000..38a9ed8
+--- /dev/null
++++ b/include/linux/fs.h
+@@ -0,0 +1,8 @@
++#ifndef _LINUX_FS_H
++#define _LINUX_FS_H
++
++#ifndef BLKGETSIZE64
++#define BLKGETSIZE64 0x1268
++#endif
++
++#endif
+diff --git a/include/linux/types.h b/include/linux/types.h
+new file mode 100644
+index 0000000..418758c
+--- /dev/null
++++ b/include/linux/types.h
+@@ -0,0 +1,28 @@
++#ifndef _LINUX_TYPES_H
++#define _LINUX_TYPES_H
++
++#include <stdint.h>
++#include <stddef.h>
++#include <sys/types.h>
++
++typedef int64_t  loff_t;
++
++typedef uint16_t __le16;
++typedef uint32_t __le32;
++typedef uint64_t __le64;
++
++typedef uint16_t __be16;
++typedef uint32_t __be32;
++typedef uint64_t __be64;
++
++typedef uint8_t  __u8;
++typedef uint16_t __u16;
++typedef uint32_t __u32;
++typedef uint64_t __u64;
++
++typedef int8_t   __s8;
++typedef int16_t  __s16;
++typedef int32_t  __s32;
++typedef int64_t  __s64;
++
++#endif

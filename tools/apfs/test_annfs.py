@@ -53,10 +53,12 @@ class Obj:
         self.ino, self.type = ino, vtype
         self.mode = r.choice([0o755, 0o644, 0o600, 0o700, 0o4755])
         self.uid, self.gid = r.choice([(0, 0), (501, 501), (33, 20)])
-        self.flags = r.choice([0, 0, 0x40, 0x8000])                 # UF_TRACKED, UF_HIDDEN
-        self.pclass = r.choice([0, 3, 4])
+        # UF_TRACKED, UF_HIDDEN, UF_COMPRESSED (no decmpfs attribute here: taken off)
+        self.flags = r.choice([0, 0, 0x40, 0x8000, 0x20])
+        self.pclass = r.choice([0, 3, 4, 7])                        # 7: CX
         self.iflags = 1 if vtype == VDIR and r.random() < 0.2 else 0
-        self.docid = r.randrange(3, 1 << 20) if r.random() < 0.2 else 0
+        # ids below 3 are APFS's own and get new ones
+        self.docid = r.choice([1, 2, r.randrange(3, 1 << 20)]) if r.random() < 0.2 else 0
         self.times = [(r.randrange(1500000000, 1800000000), r.randrange(10 ** 9)) for _ in range(4)]
         self.entries = []                                           # (name, child)
         self.target = b''
@@ -201,8 +203,22 @@ def check(image, objs):
     for p in set(want) - got_paths:
         problems.append('%s: missing' % p)
     problems += compare(v, '/', apfs.ROOT_DIR_INO_NUM, objs[0], seen)
+    docs = [d for d in seen_docids(v, seen)]
+    if len(docs) != len(set(docs)):
+        problems.append('document ids used twice')
+    # nodes filled front to back left them nearly empty (4.6 records each) and the tree 8 deep
+    t = v.tree
+    if t.node_count >= 10 and t.key_count / t.node_count < 10:
+        problems.append('file-system tree: %.1f records a node' % (t.key_count / t.node_count))
     c.close()
     return problems
+
+
+def seen_docids(v, ids):
+    for fid in ids:
+        d = v.inode(fid).xf.get(INO_EXT_TYPE_DOCUMENT_ID)
+        if d:
+            yield struct.unpack('<I', d)[0]
 
 
 def compare(v, p, fid, o, seen):
@@ -215,13 +231,17 @@ def compare(v, p, fid, o, seen):
     same('type', ino.ifmt, KIND[o.type])
     same('mode', ino.mode & 0o7777, o.mode)
     same('owner', (ino.owner, ino.group), (o.uid, o.gid))
-    same('flags', ino.bsd_flags, o.flags)
+    same('flags', ino.bsd_flags, o.flags & ~0x20)
     same('class', ino.protection_class, o.pclass)
     same('times', (ino.access_time, ino.mod_time, ino.change_time, ino.create_time),
          tuple(s * 10 ** 9 + n for s, n in o.times))
     same('sync root', bool(ino.internal_flags & INODE_IS_SYNC_ROOT), bool(o.iflags))
     d = ino.xf.get(INO_EXT_TYPE_DOCUMENT_ID)
-    same('document id', struct.unpack('<I', d)[0] if d else 0, o.docid)
+    docid = struct.unpack('<I', d)[0] if d else 0
+    if o.docid >= 3 or not o.docid:
+        same('document id', docid, o.docid)
+    elif docid < 3:
+        out.append('%s: document id %d, want a new one' % (p, docid))
     if o.ino >= 16 or o.ino == 2:
         same('inode', fid, o.ino)
     if o.type != VDIR:

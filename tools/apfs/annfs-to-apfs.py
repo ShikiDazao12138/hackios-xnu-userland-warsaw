@@ -19,9 +19,10 @@ install, or starting over): every file on it is gone.  The first 512 MiB are sav
 --rollback writes a saved BACKUP back over the first 512 MiB: the partition is as it was before
 (ANNFS001 after a conversion).  Changes made under APFS since then are lost.
 
-Needs: adb, a C compiler with zlib and OpenSSL for apfs-tool (tools/apfs/build-tool.sh; built
-once into apfs-work/), and about 600 MiB free here and on the phone's /data.  apfsck checks the
-new container when xnu-deps/build/apfsprogs has it (tools/apfs/check-image.sh builds it).
+Needs: adb, a C compiler with zlib and OpenSSL for apfs-tool (tools/apfs/build-tool.sh, run each
+time into apfs-work/), and about 600 MiB free here and on the phone's /data.  apfsck
+(tools/apfs/build-apfsck.sh, which clones linux-apfs/apfsprogs the first time) checks the new
+container; without it the conversion goes on unchecked.
 """
 import argparse
 import datetime
@@ -35,7 +36,6 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 TOOL = os.path.join(ROOT, 'apfs-work', 'apfs-tool')
-APFSCK = os.path.join(ROOT, 'xnu-deps', 'build', 'apfsprogs', 'apfsck', 'apfsck')
 MIB = 1 << 20
 HEAD = 512 * MIB
 TAIL = 32 * MIB
@@ -122,9 +122,14 @@ def written_past(path, off):
 
 
 def tool():
-    if not os.access(TOOL, os.X_OK):
-        subprocess.run(['bash', os.path.join(HERE, 'build-tool.sh')], check=True)
+    subprocess.run(['bash', os.path.join(HERE, 'build-tool.sh')], check=True, stdout=subprocess.DEVNULL)
     return TOOL
+
+
+def apfsck():
+    """apfsck's path, or None when it cannot be built here."""
+    r = subprocess.run(['bash', os.path.join(HERE, 'build-apfsck.sh')], stdout=subprocess.PIPE, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
 
 
 def convert(serial, dev, size, backup_dir, empty_volume):
@@ -156,11 +161,13 @@ def convert(serial, dev, size, backup_dir, empty_volume):
                     'Data=%s,role=data' % empty], check=True)
     if not empty_volume:
         subprocess.run([tool(), 'annfs', image, backup, tail], check=True)
-    if os.access(APFSCK, os.X_OK):
-        subprocess.run([APFSCK, '-cw', image], check=True)
+    checker = apfsck()
+    if checker is not None:
+        if subprocess.run([checker, '-cw', image]).returncode != 0:
+            die('apfsck finds the new container unsound; nothing is changed (%s)' % work)
         print('annfs-to-apfs: apfsck finds the new container clean', flush=True)
     else:
-        print('annfs-to-apfs: no apfsck here (tools/apfs/check-image.sh builds it); not checked', flush=True)
+        print('annfs-to-apfs: apfsck cannot be built here (tools/apfs/build-apfsck.sh); not checked', flush=True)
     if written_past(image, HEAD):
         die('the conversion wrote past 512 MiB; nothing is changed (%s)' % work)
     patch = os.path.join(work, 'apfs-head.img')

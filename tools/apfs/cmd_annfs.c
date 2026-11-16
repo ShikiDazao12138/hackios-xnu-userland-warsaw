@@ -8,7 +8,9 @@
  * newer valid slot is read and every object reachable from the
  * root is made again with its inode number (those below 16 are APFS's own and get new ones),
  * mode, owner, BSD flags, times, protection class, document id, sync-root mark and extended
- * attributes; a name that appears twice for one inode becomes a hard link.  A regular file is
+ * attributes; a name that appears twice for one inode becomes a hard link.  Document ids below
+ * 3 (APFS keeps them) get new ones past the highest; UF_COMPRESSED stays only on files that
+ * have a decmpfs attribute.  A regular file is
  * given the blocks its data is in: ANNFS page n (16 KiB at 512 MiB + 16 KiB * n) is APFS
  * blocks 131072 + 4n to 131072 + 4n + 3, the ones within the file's length.  ANNFS allocates
  * next-fit across the whole partition, so some of them may be past the container: those are
@@ -29,6 +31,8 @@
 #define ANNFS_DATA_BLOCK  131072u           /* 512 MiB in blocks of 4 KiB */
 #define ANNFS_ROOT        2u
 #define ANNFS_SYNCROOT    0x1u              /* RAMFS_IF_SYNCROOT */
+#define ANNFS_DOC_MIN     3u                /* APFS keeps document ids below this */
+#define ANNFS_UF_COMPRESSED 0x20u           /* sys/stat.h */
 #define A8(n)             (((uint64_t)(n) + 7) & ~7ULL)
 
 /* the records as ramfs_disk.inc lays them out (version 3) */
@@ -62,7 +66,8 @@ struct conv {
 	uint32_t n;
 	const uint8_t *tail;                /* the partition from the container's end on */
 	uint64_t tail_blocks;
-	uint64_t links, adopted, moved, xattrs, skipped_types;
+	uint64_t links, adopted, moved, xattrs, skipped_types, new_docids, uncompressed;
+	uint32_t next_docid;                /* for ANNFS document ids below APFS's first, 3 */
 };
 
 static int
@@ -313,6 +318,23 @@ fill(struct conv *c, const struct node *dir, struct node **queue, uint32_t *tail
 	return error;
 }
 
+static bool
+has_xattr(const struct node *nd, const char *name)
+{
+	const uint8_t *p = nd->xattrs;
+	size_t len = strlen(name);
+
+	for (uint32_t x = 0; x < nd->rec->nxattrs; x++) {
+		uint32_t nl = ((const uint32_t *)p)[0], size = ((const uint32_t *)p)[1];
+
+		if (nl == len && memcmp(p + 8, name, len) == 0) {
+			return true;
+		}
+		p += 8 + A8((uint64_t)nl + size);
+	}
+	return false;
+}
+
 /* What only settles once every name is in: attributes, document ids, and times last. */
 static int
 finish(struct conv *c, struct node *nd)
@@ -326,6 +348,15 @@ finish(struct conv *c, struct node *nd)
 	};
 	int error = give_xattrs(c, nd);
 
+	/*
+	 * UF_COMPRESSED with no decmpfs attribute (ramfs took the flag from chflags; the bytes are
+	 * the file's own): APFS would not have set it (decmpfs_update_attributes), and the file
+	 * would read and write as compressed.
+	 */
+	if ((a.flags & ANNFS_UF_COMPRESSED) && !has_xattr(nd, "com.apple.decmpfs")) {
+		a.flags &= ~ANNFS_UF_COMPRESSED;
+		c->uncompressed++;
+	}
 	if (nd->made == APFS_ROOT_DIR_INO_NUM) {
 		a.set |= APFS_WA_PCLASS;        /* (the others had theirs from apfs_w_create) */
 		a.pclass = r->pclass;
@@ -335,7 +366,10 @@ finish(struct conv *c, struct node *nd)
 		a.iflags_on = APFS_INODE_IS_SYNC_ROOT;
 	}
 	if (error == 0 && r->document_id != 0) {
-		error = apfs_w_set_docid(c->w, nd->made, r->document_id);
+		uint32_t doc = r->document_id >= ANNFS_DOC_MIN ? r->document_id : c->next_docid++;
+
+		c->new_docids += doc != r->document_id;
+		error = apfs_w_set_docid(c->w, nd->made, doc);
 	}
 	if (error == 0) {
 		error = apfs_w_setattr(c->w, nd->made, &a);
@@ -405,10 +439,14 @@ cmd_annfs(const char *path, const char *head_path, const char *tail_path)
 		apfs_nx_close(&nx);
 		return 1;
 	}
+	c.next_docid = ANNFS_DOC_MIN;
 	for (uint32_t i = 0; i < c.n; i++) {
 		const struct annfs_inode *r = c.nodes[i].rec;
 
 		max_ino = r->ino > max_ino ? r->ino : max_ino;
+		if (r->document_id >= c.next_docid) {
+			c.next_docid = r->document_id + 1;
+		}
 		for (uint32_t b = 0; r->type == 1 && b < r->nblocks; b++) {
 			uint64_t last = ANNFS_DATA_BLOCK + (uint64_t)c.nodes[i].blocks[b] * 4 + 3;
 
@@ -443,8 +481,10 @@ cmd_annfs(const char *path, const char *head_path, const char *tail_path)
 	if (error == 0) {
 		printf("annfs: %" PRIu64 " objects made, %" PRIu64 " more names (hard links), %" PRIu64
 		    " extended attributes, %" PRIu64 " blocks of data adopted, %" PRIu64 " copied from past the container; %"
-		    PRIu64 " objects left out (%" PRIu64 " names of sockets or unknown types, the rest named by no directory)\n",
-		    files, c.links, c.xattrs, c.adopted, c.moved, (uint64_t)c.n - files, c.skipped_types);
+		    PRIu64 " objects left out (%" PRIu64 " names of sockets or unknown types, the rest named by no directory); %"
+		    PRIu64 " document ids below 3 renumbered; UF_COMPRESSED taken off %" PRIu64 " files without a decmpfs "
+		    "attribute\n", files, c.links, c.xattrs, c.adopted, c.moved, (uint64_t)c.n - files, c.skipped_types,
+		    c.new_docids, c.uncompressed);
 	} else {
 		fprintf(stderr, "apfs-tool annfs: %s: stopped: %s; nothing of the image is to be used\n", path,
 		    strerror(error));
