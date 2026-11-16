@@ -92,7 +92,7 @@ fi
 [ "${WIFID-1}" != 0 ] && IOS_JOBS="$IOS_JOBS com.apple.wifid"
 
 SILEO_BIN="chmod cp mkdir mv rm"
-INJECT=${INJECT-"/annibale/lib/libannibale-sb26.dylib SpringBoard Preferences lsd wifid
+INJECT=${INJECT-"/annibale/lib/libannibale-sb26.dylib SpringBoard PosterBoard MercuryPosterExtension WidgetRenderer_Default SharingUIService Preferences lsd wifid
 /annibale/lib/libannibale-vt.dylib videocodecd mediaserverd com.apple.WebKit.GPU video_decode_test video_player_test"}
 
 [ -n "$STOREFRONT" ] && INJECT="$INJECT

@@ -30,7 +30,7 @@ void sb26_install_layer_dump(void);
 enum {
     LAYER_LINES = 1500,
     LAYER_LINES_FULL = 20000,
-    LAYER_BELOW = 3,
+    LAYER_BELOW = 8,
     LAYER_DEPTH = 64
 };
 
@@ -545,11 +545,11 @@ matches(id layer, const char *filter)
 }
 
 static void
-walk(id layer, unsigned depth, const char *filter, int below, int full)
+walk(id layer, unsigned depth, const char *filter, int below, int below_limit, int full)
 {
     unsigned max_lines = full ? LAYER_LINES_FULL : LAYER_LINES;
     if (!layer || lines >= max_lines || depth > LAYER_DEPTH) return;
-    if (below < 0 && matches(layer, filter)) below = LAYER_BELOW;
+    if (below < 0 && matches(layer, filter)) below = below_limit;
     if (below >= 0 || full) {
         struct rect bounds = ((struct rect (*)(id, SEL))objc_msgSend)(layer, sel_registerName("bounds"));
         BOOL hidden = ((BOOL (*)(id, SEL))objc_msgSend)(layer, sel_registerName("isHidden"));
@@ -575,14 +575,15 @@ walk(id layer, unsigned depth, const char *filter, int below, int full)
     for (unsigned long i = 0; i < count && lines < max_lines; i++) {
         id child = ((id (*)(id, SEL, unsigned long))objc_msgSend)(sublayers,
             sel_registerName("objectAtIndex:"), i);
-        walk(child, depth + 1, filter, full ? (1 << 30) : (below > 0 ? below - 1 : -1), full);
+        walk(child, depth + 1, filter, full ? (1 << 30) : (below > 0 ? below - 1 : -1), below_limit, full);
     }
 }
 
 static void
-dump(const char *filter, int full)
+dump_ex(const char *filter, int below_limit, int full)
 {
     FILE *fp = NULL;
+    if (below_limit < 0) below_limit = LAYER_BELOW;
     if (full) {
         fp = fopen("/private/var/tmp/layers-dump.txt", "w");
         if (!fp) fp = fopen("/tmp/layers-dump.txt", "w");
@@ -596,7 +597,8 @@ dump(const char *filter, int full)
         sel_registerName("count")) : 0;
     lines = 0;
     unsigned max_lines = full ? LAYER_LINES_FULL : LAYER_LINES;
-    out("sb26 layers begin filter=%s full=%d windows=%lu\n", filter ? filter : (full ? "full" : "all"), full, count);
+    out("sb26 layers begin proc=%s filter=%s below=%d full=%d windows=%lu\n",
+        getprogname() ? getprogname() : "-", filter ? filter : (full ? "full" : "all"), below_limit, full, count);
     for (unsigned long i = 0; i < count && lines < max_lines; i++) {
         id window = ((id (*)(id, SEL, unsigned long))objc_msgSend)(windows,
             sel_registerName("objectAtIndex:"), i);
@@ -604,13 +606,50 @@ dump(const char *filter, int full)
         unsigned id_of_context = class_respondsToSelector(object_getClass(window), context)
             ? ((unsigned (*)(id, SEL))objc_msgSend)(window, context) : 0;
         out("sb26 layer window %lu %s context %x\n", i, name_of(window), id_of_context);
-        walk(send(window, "layer"), 0, filter, filter ? -1 : 1 << 30, full);
+        walk(send(window, "layer"), 0, filter, filter ? -1 : 1 << 30, below_limit, full);
     }
     out("sb26 layers end lines=%u%s\n", lines, lines >= max_lines ? " (cut)" : "");
     if (dump_fp) {
         fclose(dump_fp);
         dump_fp = NULL;
     }
+}
+
+static void
+dump(const char *filter, int full)
+{
+    dump_ex(filter, LAYER_BELOW, full);
+}
+
+static void
+dump_from_query_file(void)
+{
+    FILE *fp = fopen("/private/var/tmp/layers-query.txt", "r");
+    if (!fp) fp = fopen("/tmp/layers-query.txt", "r");
+    char buf[512] = "", filter_buf[128] = "";
+    int below = LAYER_BELOW, full = 0;
+
+    if (fp) {
+        size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+        buf[n] = '\0';
+        fclose(fp);
+    }
+    char *rest = NULL;
+    for (char *tok = strtok_r(buf, " \t\r\n", &rest); tok != NULL; tok = strtok_r(NULL, " \t\r\n", &rest)) {
+        if (strncmp(tok, "filter=", 7) == 0) {
+            snprintf(filter_buf, sizeof(filter_buf), "%s", tok + 7);
+        } else if (strncmp(tok, "below=", 6) == 0) {
+            below = atoi(tok + 6);
+        } else if (strncmp(tok, "depth=", 6) == 0) {
+            below = atoi(tok + 6);
+        } else if (strncmp(tok, "full=", 5) == 0) {
+            full = atoi(tok + 5) != 0;
+        } else if (strchr(tok, '=') == NULL && filter_buf[0] == '\0') {
+            snprintf(filter_buf, sizeof(filter_buf), "%s", tok);
+        }
+    }
+    const char *filter = (filter_buf[0] && strcmp(filter_buf, "all") != 0) ? filter_buf : NULL;
+    dump_ex(filter, below, full);
 }
 
 static void
@@ -756,6 +795,12 @@ sb26_install_layer_dump(void)
         dispatch_once_f(&once, NULL, resolve);
         dump(NULL, 1);
     });
+    notify_register_dispatch("com.annibale.layers.query", &token, dispatch_get_main_queue(), ^(int t) {
+        static dispatch_once_t once;
+        (void)t;
+        dispatch_once_f(&once, NULL, resolve);
+        dump_from_query_file();
+    });
     notify_register_dispatch("com.annibale.battery.nofx", &token, dispatch_get_main_queue(), ^(int t) {
         (void)t;
         clear_battery_filters();
@@ -766,14 +811,17 @@ sb26_install_layer_dump(void)
     });
 }
 
-/* MercuryPosterExtension draws the wallpaper SpringBoard hosts (PBUIPosterSceneLayerHostView). */
+/* Remote scene hosts (wallpaper, widgets, share sheet) whose layer trees live outside SpringBoard. */
 __attribute__((constructor)) static void
 install_poster_dump(void)
 {
-    if (!getprogname() || strcmp(getprogname(), "MercuryPosterExtension")) return;
+    const char *prog = getprogname();
+    if (!prog || (strcmp(prog, "MercuryPosterExtension") &&
+        strcmp(prog, "WidgetRenderer_Default") &&
+        strcmp(prog, "SharingUIService"))) return;
     to_say = 1;
     sb26_install_layer_dump();
-    out("sb26 layers: dump installed in %s\n", getprogname());
+    out("sb26 layers: dump installed in %s\n", prog);
     if (getenv("ANNIBALE_POSTER_AUTO_DUMP") != NULL) {
         for (int64_t seconds = 40; seconds <= 160; seconds += 120) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, seconds * (int64_t)NSEC_PER_SEC), dispatch_get_main_queue(), ^{

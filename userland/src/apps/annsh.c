@@ -32,6 +32,7 @@
  *                              written to PATH (mode 755) through a temporary file and a rename
  *   pull PATH OFFSET           ... written into PATH at OFFSET, PATH kept otherwise: a file larger
  *                              than the 16 MB inbox arrives in pieces (tools/k90auto/install-ipa.py)
+ *   inbox                      run each non-empty, non-comment line of kern.annibale.inbox once
  *   outbox PATH                the file into kern.annibale.outbox: after the run the loader stages it
  *                              ("oem recording") and run-auto.py fetches it as run/outbox.bin
  *   cat PATH [OFFSET]          the file from OFFSET on, 48 bytes a line in base64 ("cat AT DATA"),
@@ -101,7 +102,7 @@ static unsigned long long current;
 static void
 emit(const char *format, ...)
 {
-	char line[1100];
+	char line[4300];
 	va_list ap;
 	int n;
 
@@ -414,7 +415,7 @@ do_spawn(char **argv)
 static int
 do_env(int argc, char **argv, int append)
 {
-	char value[1024] = "";
+	char value[4096] = "";
 	size_t size = sizeof(value) - 1, at;
 
 	if (append && sysctlbyname("kern.annibale.env", value, &size, NULL, 0) != 0) {
@@ -538,6 +539,66 @@ do_pull(const char *path, long long at)
 	out("pull: push %llu, %zu bytes to %s", (unsigned long long)seq, size - sizeof(seq), path);
 	free(data);
 	return 0;
+}
+
+static int run(char *text);
+
+static int
+do_inbox(void)
+{
+	static uint64_t last_inbox_seq;
+	size_t size = 0, body_len;
+	char *data, *body, *cursor;
+	uint64_t seq;
+	int status = 0;
+
+	if (sysctlbyname("kern.annibale.inbox", NULL, &size, NULL, 0) != 0 || size < sizeof(seq) ||
+	    size > (1u << 20) + sizeof(seq) || (data = malloc(size + 1)) == NULL ||
+	    sysctlbyname("kern.annibale.inbox", data, &size, NULL, 0) != 0) {
+		out("inbox: kern.annibale.inbox: %s", strerror(errno));
+		return 1;
+	}
+	memcpy(&seq, data, sizeof(seq));
+	body = data + sizeof(seq);
+	body_len = size - sizeof(seq);
+	if (seq == 0 || body_len == 0) {
+		out("inbox: nothing has been pushed");
+		free(data);
+		return 1;
+	}
+	if (seq == last_inbox_seq) {
+		out("inbox: push %llu was already run", (unsigned long long)seq);
+		free(data);
+		return 1;
+	}
+	if (memchr(body, '\0', body_len) != NULL || memchr(body, '\r', body_len) != NULL) {
+		out("inbox: binary or CR payload refused (%zu bytes)", body_len);
+		free(data);
+		return 1;
+	}
+	last_inbox_seq = seq;
+	body[body_len] = '\0';
+	cursor = body;
+	while (*cursor != '\0') {
+		char *nl = strchr(cursor, '\n');
+		char *line = cursor;
+
+		if (nl != NULL) {
+			*nl = '\0';
+			cursor = nl + 1;
+		} else {
+			cursor += strlen(cursor);
+		}
+		while (*line == ' ' || *line == '\t')
+			line++;
+		if (*line == '\0' || *line == '#')
+			continue;
+		status = run(line);
+		if (status != 0)
+			break;
+	}
+	free(data);
+	return status;
 }
 
 static int
@@ -690,14 +751,16 @@ do_dump(const char *which)
 static int
 run(char *text)
 {
-	char *argv[32];
+	char *argv[256];
 	int argc = 0;
 
-	for (char *word = strtok(text, " \t"); word != NULL && argc < 31; word = strtok(NULL, " \t"))
+	for (char *word = strtok(text, " \t"); word != NULL && argc < 255; word = strtok(NULL, " \t"))
 		argv[argc++] = word;
 	argv[argc] = NULL;
 	if (argc == 0)
 		return 0;
+	if (strcmp(argv[0], "inbox") == 0 && argc == 1)
+		return do_inbox();
 	if (strcmp(argv[0], "ps") == 0)
 		return do_ps();
 	if (strcmp(argv[0], "process") == 0 && argc == 2)

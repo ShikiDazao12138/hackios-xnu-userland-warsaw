@@ -89,9 +89,9 @@ setup_activation_state(id self, SEL selector)
  * before that were dropped. isUILocked is not yet true at the first attempts either, so the boot
  * unlock is done only once the lock screen has been seen up and then gone.
  */
-#define UNLOCK_FIRST_SECONDS 4
+#define UNLOCK_FIRST_SECONDS 2
 #define UNLOCK_EVERY_SECONDS 1
-#define UNLOCK_ATTEMPTS 60
+#define UNLOCK_ATTEMPTS 120
 
 static id
 lock_screen_manager(void)
@@ -185,6 +185,7 @@ unlock_once(const char *why)
     fprintf(stderr, "sb26: unlock %s: answer=%d locked_after=%d\n", why, answer, locked_after);
     if (!locked_after) {
         sb26_on_unlocked();
+        return 2;
     }
     return 1;
 }
@@ -196,8 +197,8 @@ boot_unlock(void *context)
 {
     uintptr_t attempt = (uintptr_t)context + 1;
     int state = unlock_once("boot");
-    if (state == 1) boot_unlock_seen_locked = 1;
-    if (state == 0 && boot_unlock_seen_locked) {
+    if (state >= 1) boot_unlock_seen_locked = 1;
+    if (state == 2 || (state == 0 && boot_unlock_seen_locked)) {
         fprintf(stderr, "sb26: boot unlock done after %lu attempts\n", (unsigned long)attempt);
         sb26_on_unlocked();
         return;
@@ -207,7 +208,8 @@ boot_unlock(void *context)
             (unsigned long)attempt, boot_unlock_seen_locked);
         return;
     }
-    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, UNLOCK_EVERY_SECONDS * NSEC_PER_SEC),
+    int64_t delay_ns = (state == 1) ? (NSEC_PER_SEC / 2) : (UNLOCK_EVERY_SECONDS * NSEC_PER_SEC);
+    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, delay_ns),
         dispatch_get_main_queue(), (void *)attempt, boot_unlock);
 }
 
