@@ -1010,8 +1010,12 @@ main(int argc, char **argv, char **envp)
 		}
 		setup_disk_dev_nodes();
 	}
-	/* Keep original V57 resource fallback through union lookup. */
-	if (mount("bindfs", "/System/Library/PrivateFrameworks/CMCapture.framework/V57", MNT_RDONLY | MNT_UNION,
+	/*
+	 * CMCapture's V57 resources with the ISP-dependent rendering of the camera formats turned off
+	 * (mkcameraresources.py). The image holds the whole directory: NSBundle lists a directory to
+	 * find a resource in it, and a union mount lists only its upper layer.
+	 */
+	if (mount("bindfs", "/System/Library/PrivateFrameworks/CMCapture.framework/V57", MNT_RDONLY,
 	    (void *)in_image("/lib/CMCaptureResources/V57")) != 0) {
 		printf("init: camera resource mount failed: %s\n", strerror(errno));
 		reboot(RB_HALT);

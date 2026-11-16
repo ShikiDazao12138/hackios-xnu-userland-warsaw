@@ -576,7 +576,7 @@ worker(void *context)
 	}
 	unsigned consecutive_failures = 0;
 	isp_init(&isp);
-	while (s->state == CAM_STREAM_WARMING || s->state == CAM_STREAM_ACTIVE) {
+	while (s->state == CAM_STREAM_ACTIVE) {
 		if (camera_native_frame(device, &profile, buffer, bytes, &capture) < 0) {
 			if (capture.state == ANNIBALE_CAM_CAPTURE_FAILED && ++consecutive_failures <= 3) {
 				say("transient capture error (%u/3): state %u flags %#x error %u (%s)",
@@ -694,43 +694,32 @@ worker(void *context)
 	free(buffer);
 	isp_destroy(&isp);
 	close(device);
-	if (s->state == CAM_STREAM_WARMING || s->state == CAM_STREAM_ACTIVE) {
+	if (s->state == CAM_STREAM_ACTIVE) {
 		s->state = CAM_STREAM_FAULTED;
 	}
 	say("the frames stopped (%llu)", s->frames);
 	return NULL;
 }
 
-/*
- * Reading frames from the kernel and giving them to the graph are two things: the first begins when
- * the capture graph reserves the stream (`graph` false, from the device's RequestStreams: the sensor
- * takes a moment to settle and the exposure longer), the second only when the graph starts the
- * stream itself (`graph` true, the FigCaptureStream start method).
- */
+/* Frames are read from the kernel from the graph's Start of a stream until its Stop. */
 #define MAX_STREAMS 2
 static CMBaseObjectRef all_streams[MAX_STREAMS];
 static OSStatus stream_stop(CMBaseObjectRef o);
 
 static OSStatus
-stream_begin(CMBaseObjectRef o, bool graph)
+stream_start(CMBaseObjectRef o)
 {
 	struct stream *s = stream_of(o);
 
 	if (s->profile.bytes == 0) {
-		return graph ? ERR_NOT_AVAILABLE : 0;
+		return ERR_NOT_AVAILABLE;
 	}
 	if (s->state == CAM_STREAM_FAULTED && s->worker_started) {
 		pthread_join(s->worker, NULL);
 		s->worker_started = false;
 		s->state = CAM_STREAM_STOPPED;
 	}
-	if (s->state == CAM_STREAM_WARMING || s->state == CAM_STREAM_ACTIVE) {
-		if (graph && s->state != CAM_STREAM_ACTIVE) {
-			pthread_mutex_lock(&s->lock);
-			s->state = CAM_STREAM_ACTIVE;
-			pthread_mutex_unlock(&s->lock);
-			say("stream: the graph starts the stream (format %d)", s->format_index);
-		}
+	if (s->state == CAM_STREAM_ACTIVE) {
 		return 0;
 	}
 	/* one camera at a time: the kernel gives one sensor's frames (the other stream's worker stopped first) */
@@ -741,24 +730,15 @@ stream_begin(CMBaseObjectRef o, bool graph)
 			(void)stream_stop(all_streams[i]);
 		}
 	}
-	s->state = graph ? CAM_STREAM_ACTIVE : CAM_STREAM_WARMING;
-	if (graph) {
-		say("stream: the graph starts the stream (format %d)", s->format_index);
-	}
+	s->state = CAM_STREAM_ACTIVE;
 	s->frames = 0;
-	say("stream: frames begin (format %d)", s->format_index);
+	say("stream: the graph starts the stream (format %d)", s->format_index);
 	if (pthread_create(&s->worker, NULL, worker, o) != 0) {
 		s->state = CAM_STREAM_STOPPED;
 		return ERR_UNSUPPORTED;
 	}
 	s->worker_started = true;
 	return 0;
-}
-
-static OSStatus
-stream_start(CMBaseObjectRef o)
-{
-	return stream_begin(o, true);
 }
 
 static OSStatus
@@ -933,7 +913,7 @@ stream_create(CFAllocatorRef allocator, const struct camera *camera, CFStringRef
 		s->profile = *profile;
 		s->min_fps = s->max_fps = profile->fps_milli / 1000.0;
 	}
-	s->formats = build_stream_formats(profile);
+	s->formats = build_stream_formats(profile, camera->field_of_view);
 	s->supported = profile != NULL ? supported(stream_props, sizeof(stream_props) / sizeof(stream_props[0])) :
 	    supported(torch_props, sizeof(torch_props) / sizeof(torch_props[0]));
 	return o;

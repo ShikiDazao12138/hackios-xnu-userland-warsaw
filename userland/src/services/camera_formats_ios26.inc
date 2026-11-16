@@ -120,7 +120,7 @@ populate_outputs(CFMutableDictionaryRef f, uint32_t width, uint32_t height, doub
 }
 
 static CFDictionaryRef
-native_format(const struct annibale_camera_profile *profile, uint32_t width, uint32_t height)
+native_format(const struct annibale_camera_profile *profile, uint32_t width, uint32_t height, double field_of_view)
 {
 	CFMutableDictionaryRef f = (CFMutableDictionaryRef)new_dict();
 	CMVideoFormatDescriptionRef fd = NULL;
@@ -135,6 +135,7 @@ native_format(const struct annibale_camera_profile *profile, uint32_t width, uin
 	put(f, "VideoRawBitDepth", number_i(10));
 	put(f, "VideoMaxWidth", number_i(width));
 	put(f, "VideoMaxHeight", number_i(height));
+	put(f, "VideoFieldOfView", number_f(field_of_view));
 	put(f, "Experimental", CFRetain(kCFBooleanFalse));
 	put(f, "VideoIsBinned", CFRetain(kCFBooleanFalse));
 	put(f, "SensorHDRMode", number_i(0));
@@ -161,7 +162,7 @@ native_format(const struct annibale_camera_profile *profile, uint32_t width, uin
 }
 
 static CFDictionaryRef
-v57_stream_format(const struct ios26_stream_format_spec *sp)
+v57_stream_format(const struct ios26_stream_format_spec *sp, double field_of_view)
 {
 	CFMutableDictionaryRef f = (CFMutableDictionaryRef)new_dict();
 	CMVideoFormatDescriptionRef fd = NULL;
@@ -178,6 +179,7 @@ v57_stream_format(const struct ios26_stream_format_spec *sp)
 	put(f, "VideoRawBitDepth", number_i(10));
 	put(f, "VideoMaxWidth", number_i(out_w));
 	put(f, "VideoMaxHeight", number_i(out_h));
+	put(f, "VideoFieldOfView", number_f(field_of_view));
 	put(f, "Experimental", CFRetain(kCFBooleanFalse));
 	put(f, "SensorWidth", number_i(sp->sensor_w));
 	put(f, "SensorHeight", number_i(sp->sensor_h));
@@ -209,7 +211,7 @@ v57_stream_format(const struct ios26_stream_format_spec *sp)
 }
 
 static CFArrayRef
-build_stream_formats(const struct annibale_camera_profile *profile)
+build_stream_formats(const struct annibale_camera_profile *profile, double field_of_view)
 {
 	CFDictionaryRef list[32];
 	CFIndex nf = 0;
@@ -220,7 +222,7 @@ build_stream_formats(const struct annibale_camera_profile *profile)
 		size_t nspecs = 0;
 
 		for (int i = 0; i < 3; i++) {
-			list[nf++] = native_format(profile, sizes[i][0], sizes[i][1]);
+			list[nf++] = native_format(profile, sizes[i][0], sizes[i][1], field_of_view);
 		}
 		if (profile->sensor == 1) {
 			specs = v57_back_specs;
@@ -230,7 +232,7 @@ build_stream_formats(const struct annibale_camera_profile *profile)
 			nspecs = sizeof(v57_front_specs) / sizeof(v57_front_specs[0]);
 		}
 		for (size_t i = 0; i < nspecs; i++) {
-			list[nf++] = v57_stream_format(&specs[i]);
+			list[nf++] = v57_stream_format(&specs[i], field_of_view);
 		}
 	}
 	CFArrayRef arr = CFArrayCreate(NULL, (const void **)list, nf, &kCFTypeArrayCallBacks);

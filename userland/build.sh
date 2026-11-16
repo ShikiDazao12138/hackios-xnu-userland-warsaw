@@ -371,8 +371,8 @@ for camera_sensor in front wide; do
 	python3 "$camera_tools/camsensor.py" --profile "$camera_module" "$camera_mode" "root/fw/$camera_output" >/dev/null
 done
 unset camera_module camera_tools camera_sensor camera_mode camera_output
-python3 ./mkcameraresources.py "$IOS/rootfs/System/Library/PrivateFrameworks/CMCapture.framework/V57/AVCaptureSession.plist" \
-	root/fw/camera-ov20b-front-mode4.tab root/lib/CMCaptureResources/V57/AVCaptureSession.plist
+python3 ./mkcameraresources.py "$IOS/rootfs/System/Library/PrivateFrameworks/CMCapture.framework/V57" \
+	root/lib/CMCaptureResources/V57
 
 for tuned in ../fw-camera/com.qti.tuned.annibale_*.bin; do
 	[ -f "$tuned" ] || continue

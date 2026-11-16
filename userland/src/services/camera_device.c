@@ -281,7 +281,7 @@ static const struct prop stream_props[] = {
 	{ "SupportedFormatsArray", "Collection", "ReadOnly" },
 	{ "MaxZoomFactor", "Number", "ReadOnly" }, { "SupportedColorSpaces", "Collection", "ReadOnly" },
 	{ "HasAutoFocusPositionSensor", "Boolean", "ReadOnly" }, { "Clock", "Clock", "ReadOnly" },
-	{ "FormatIndex", "Number", "ReadWrite" }, { "MinimumFrameRate", "Number", "ReadWrite" }, { "MaximumFrameRate", "Number", "ReadWrite" },
+	{ "PixelSize", "Number", "ReadOnly" }, { "FormatIndex", "Number", "ReadWrite" }, { "MinimumFrameRate", "Number", "ReadWrite" }, { "MaximumFrameRate", "Number", "ReadWrite" },
 	{ "MaximumAllowedFrameRate", "Number", "ReadWrite" }, { "VideoOutputConfigurations", "Collection", "ReadWrite" },
 	{ "VideoOutputsEnabled", "Collection", "ReadWrite" }, { "VideoOutputHandlers", "Collection", "WriteOnly" },
 	{ "DeferAdditionOfAttachments", "Boolean", "ReadWrite" },
@@ -355,19 +355,25 @@ static const char *const output_names[OUTPUTS] = {
 };
 
 #define MAX_ZOOM                16      /* (the most the iPhone's wide camera zooms digitally) */
-/* Physical identities are independent of a mode's native-capture support. */
+/*
+ * Physical identities are independent of a mode's native-capture support. The optics come from the
+ * two sensor modules whose profiles the kernel accepts (FRONT_SOURCE_SHA256 and BACK_SOURCE_SHA256 in
+ * tools/camsensor_profile.py): field_of_view is lensInformation.horizontalViewAngle in degrees, which
+ * CMCapture copies into every resolved format and aborts without; pixel_size is the pixel pitch in
+ * micrometres, which a capture stream must report between 0 and 100 or the graph is not built.
+ */
 static const struct camera {
 	uint32_t        sensor;
 	const char      *name, *unique_id;
 	bool            turned;
+	double          field_of_view, pixel_size;
 } cameras[2] = {
-	{ 1, "Back Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:0", false },
-	{ 2, "Front Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:1", true },
+	{ 1, "Back Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:0", false, 69.4, 1.008 },
+	{ 2, "Front Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:1", true, 77.3, 0.702 },
 };
 
 enum camera_stream_state {
 	CAM_STREAM_STOPPED = 0,
-	CAM_STREAM_WARMING = 1,
 	CAM_STREAM_ACTIVE  = 2,
 	CAM_STREAM_FAULTED = 3,
 };
@@ -450,6 +456,8 @@ stream_copy_property(CMBaseObjectRef o, CFStringRef key, CFAllocatorRef allocato
 		value = CFRetain(CFSTR("Apple Inc."));
 	} else if (key_is(key, "SupportedFormatsArray")) {
 		value = CFRetain(s->formats);
+	} else if (key_is(key, "PixelSize")) {
+		value = number_f(s->camera->pixel_size);
 	} else if (key_is(key, "FormatIndex")) {
 		value = number_i(s->format_index);
 	} else if (key_is(key, "MinimumFrameRate")) {
@@ -883,17 +891,10 @@ device_request_streams(CMBaseObjectRef o, CFArrayRef streams, CFDictionaryRef op
 			say_once("device: the request's options", CFSTR("RequestStreams"), options);
 		}
 	}
-	if (streams != NULL) {
-		CFIndex n = CFArrayGetCount(streams);
-
-		for (CFIndex i = 0; i < n; i++) {
-			CMBaseObjectRef st = (CMBaseObjectRef)CFArrayGetValueAtIndex(streams, i);
-
-			if (st != NULL) {
-				(void)stream_begin(st, false);
-			}
-		}
-	}
+	/*
+	 * Control alone starts no frames: building the camera list, CMCapture takes control of every
+	 * stream in turn to read its properties. The sensor starts with the stream's Start.
+	 */
 	return 0;
 }
 

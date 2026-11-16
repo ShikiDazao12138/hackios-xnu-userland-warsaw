@@ -338,6 +338,14 @@ static void flashlight_consumer(CMBaseObjectRef device, CMBaseObjectRef back, CM
         value = NULL;
         assert(stream_copy_property(front, CFSTR("TorchLevel"), NULL, &value) == ERR_NOT_AVAILABLE && value == NULL);
         assert(torch_writes == writes && torch_reads == queries);
+        /* CMCapture takes control of every stream while it lists the cameras: no capture until Start. */
+        CFArrayRef front_only = CFArrayCreate(NULL, (const void **)&front, 1, &kCFTypeArrayCallBacks);
+        captures = capture_calls;
+        assert(device_request_streams(device, front_only, NULL) == 0);
+        assert(!stream_of(front)->worker_started && stream_of(front)->state == CAM_STREAM_STOPPED);
+        assert(device_relinquish_streams(device, front_only, NULL) == 0);
+        assert(capture_calls == captures);
+        CFRelease(front_only);
     }
 }
 
@@ -665,14 +673,24 @@ int main(void) {
     for (size_t i = 0; i < sizeof(v57_front_specs) / sizeof(v57_front_specs[0]); i++) {
         assert(resolve_v57_spec(formats, &v57_front_specs[i]) >= 3);
     }
+    /* CMCapture aborts on a resolved format without VideoFieldOfView. */
+    for (CFIndex i = 0; i < CFArrayGetCount(formats); i++) {
+        assert(get_double(CFArrayGetValueAtIndex(formats, i), CFSTR("VideoFieldOfView")) == stream_of(front)->camera->field_of_view);
+    }
     CFRelease(formats);
+    /* BWFigVideoCaptureStream fails the graph without a PixelSize between 0 and 100. */
+    CFNumberRef pixel_size = NULL;
+    assert(stream_copy_property(front, CFSTR("PixelSize"), kCFAllocatorDefault, &pixel_size) == 0);
+    double pixel_um = 0;
+    assert(CFNumberGetValue(pixel_size, kCFNumberDoubleType, &pixel_um) && pixel_um > 0 && pixel_um < 100);
+    CFRelease(pixel_size);
 
     struct annibale_camera_profile back_profile = fixture;
     back_profile.sensor = 1;
     back_profile.mode = 24;
     back_profile.width = 2560;
     back_profile.height = 1920;
-    CFArrayRef back_formats = build_stream_formats(&back_profile);
+    CFArrayRef back_formats = build_stream_formats(&back_profile, cameras[0].field_of_view);
     assert(CFArrayGetCount(back_formats) == 3 + (CFIndex)(sizeof(v57_back_specs) / sizeof(v57_back_specs[0])));
     for (size_t i = 0; i < sizeof(v57_back_specs) / sizeof(v57_back_specs[0]); i++) {
         assert(resolve_v57_spec(back_formats, &v57_back_specs[i]) >= 3);
