@@ -79,6 +79,13 @@ jobs:
           export XNU26_SRC="/tmp/k/merge/xnu-src/$XNU_TAG"
           bash xnu26/apply.sh "$XNU26_SRC"
           grep -c . xnu26/patches/series
+          # TestDextRematch: iig cannot generate its IOKit metaclass, and the build host's tree
+          # comments these entries out for the same reason. This kernel loads no dext, so nothing
+          # the device needs comes from them.
+          for f in "$XNU26_SRC"/iokit/conf/files*; do
+            sed -i '' 's|^\([^#].*TestDextRematch.*\)|#\1|' "$f"
+          done
+          grep -rn TestDextRematch "$XNU26_SRC/iokit/conf" | head -5 || true
 
       - name: deps stage 1
         run: |
