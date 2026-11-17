@@ -62,6 +62,19 @@ jobs:
           chmod +x /tmp/k/shims/*
           echo "XNUDEPS=/tmp/k/merge/xnu-deps" >> "$GITHUB_ENV"
           echo "/tmp/k/shims" >> "$GITHUB_PATH"
+          # The iig shim reads the pre-generated DriverKit headers from a macOS SDK tree it names
+          # with a fixed path; on the build host that tree was copied out of the Command Line Tools
+          # by hand. Link Xcode's Kernel.framework there instead.
+          MACSDK=$(xcrun --sdk macosx --show-sdk-path)
+          KF="$MACSDK/System/Library/Frameworks/Kernel.framework"
+          DEST=/tmp/k/merge/xnu-deps/MacOSX13.3.sdk/System/Library/Frameworks
+          mkdir -p "$DEST"
+          ln -sfn "$KF" "$DEST/Kernel.framework"
+          echo "Kernel.framework -> $(ls -d "$DEST/Kernel.framework/Headers" 2>/dev/null || echo MISSING)"
+          ls "$DEST/Kernel.framework/Headers/DriverKit" 2>/dev/null | head -5 || true
+          # migcom: Xcode keeps it inside the toolchain, where it is not on PATH.
+          MIGCOM=$(find /Applications/Xcode*.app -name migcom -type f 2>/dev/null | head -1)
+          if [ -n "$MIGCOM" ]; then ln -sf "$MIGCOM" /tmp/k/shims/migcom; echo "migcom: $MIGCOM"; else echo "migcom: NOT FOUND"; fi
           cd /tmp/k/merge
           export XNU26_SRC="/tmp/k/merge/xnu-src/$XNU_TAG"
           bash xnu26/apply.sh "$XNU26_SRC"
