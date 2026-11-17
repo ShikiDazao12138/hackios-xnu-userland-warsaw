@@ -51,6 +51,8 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/k/merge
           tar xzf tools/kernel/xnu26-xnu.tar.gz -C /tmp/k/merge
+          chmod +x /tmp/k/merge/xnu-deps/host/bin/* /tmp/k/merge/xnu26/*.sh
+          echo "/tmp/k/merge/xnu-deps/host/bin" >> "$GITHUB_PATH"
           cd /tmp/k/merge
           export XNU26_SRC="/tmp/k/merge/xnu-src/$XNU_TAG"
           bash xnu26/apply.sh "$XNU26_SRC"
