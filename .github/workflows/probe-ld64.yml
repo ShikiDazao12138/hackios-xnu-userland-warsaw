@@ -1,0 +1,41 @@
+name: probe-ld64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe ld64.lld static support
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld
+          echo "=== lld version"
+          ls /usr/lib/llvm-*/bin/ld64.lld
+          /usr/lib/llvm-*/bin/ld64.lld --version
+          echo "=== does ld64.lld know -static ?"
+          /usr/lib/llvm-*/bin/ld64.lld --help 2>&1 | grep -i -E "^\s+-(static|dylinker|no_dyld)" || echo "no static in help"
+          echo "=== all options mentioning 'stat'"
+          /usr/lib/llvm-*/bin/ld64.lld --help 2>&1 | grep -i stat || true
+          cd initbuild
+          TC="--target=arm64-apple-ios14.0"
+          CFLAGS="-Os -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Ilibmini"
+          clang $TC $CFLAGS -c libmini/mini.c -o mini.o
+          clang $TC -c libmini/start.S -o start.o
+          clang $TC $CFLAGS -c init.c -o init.o
+          echo "=== direct ld64.lld with -static"
+          /usr/lib/llvm-*/bin/ld64.lld -static -arch arm64 -platform_version ios 14.0 14.0 \
+            -e _start -pagezero_size 0x100000000 -o init-direct init.o mini.o start.o 2>&1 | tail -5 || true
+          if [ -f init-direct ]; then
+            echo "=== direct result"; ls -l init-direct
+            /usr/lib/llvm-*/bin/ld64.lld --version
+            od -An -tx1 -N32 init-direct
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe
+          path: initbuild/init-direct
+          if-no-files-found: ignore
