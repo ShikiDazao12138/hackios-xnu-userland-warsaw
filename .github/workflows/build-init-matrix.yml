@@ -1,0 +1,41 @@
+name: build-init-matrix
+
+on:
+  workflow_dispatch:
+
+jobs:
+  init:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-13, macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile init with Apple ld64
+        run: |
+          set -euo pipefail
+          cd initbuild
+          clang --version
+          TC="-arch arm64 -miphoneos-version-min=14.0"
+          CFLAGS="-Os -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra -Ilibmini"
+          LD="-Wl,-e,_start -Wl,-pagezero_size,0x100000000"
+          clang $TC $CFLAGS -c libmini/mini.c -o mini.o
+          clang $TC -c libmini/start.S -o start.o
+          clang $TC $CFLAGS -static $LD -o init-a init.c mini.o start.o
+          clang $TC $CFLAGS -static $LD -Wl,-dead_strip -o init-b init.c mini.o start.o
+          for f in init-a init-b; do
+            echo "== $f"; ls -l $f
+            otool -hv $f || true
+            otool -l $f | grep -E "cmd LC_(UNIXTHREAD|MAIN|LOAD_DYLINKER|DYLD_INFO)" || true
+            shasum -a 256 $f
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: init-${{ matrix.os }}
+          path: |
+            initbuild/init-a
+            initbuild/init-b
+          if-no-files-found: error
