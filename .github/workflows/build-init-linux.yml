@@ -15,7 +15,7 @@ jobs:
           sudo apt-get install -y -qq clang lld
           clang --version
 
-      - name: Compile init for arm64 Apple (Mach-O, freestanding)
+      - name: Compile init variants (Mach-O arm64, truly static: no dyld, no LC_MAIN)
         run: |
           set -euo pipefail
           cd initbuild
@@ -23,29 +23,22 @@ jobs:
           CFLAGS="-Os -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra -Ilibmini"
           clang $TC $CFLAGS -c libmini/mini.c -o mini.o
           clang $TC -c libmini/start.S -o start.o
-          build() {
-            out=$1; shift
-            clang $TC $CFLAGS -fuse-ld=lld -static \
-              -Wl,-e,_start -Wl,-pagezero_size,0x100000000 \
-              -Wl,-platform_version,ios,14.0,14.0 "$@" \
-              -o "$out" init.c mini.o start.o
-          }
-          build init            -Wl,-no_pie -Wl,-dead_strip
-          build init-nopie       -Wl,-no_pie
-          build init-plain
-          for f in init init-nopie init-plain; do
-            echo "== $f"
-            ls -l $f
-            file $f
-            od -An -tx1 -N32 $f
-            shasum -a 256 $f
+          base="-fuse-ld=lld -Wl,-e,_start -Wl,-pagezero_size,0x100000000 -Wl,-platform_version,ios,14.0,14.0"
+          echo "--- A: -Wl,-static"
+          clang $TC $CFLAGS $base -Wl,-static -o init-a init.c mini.o start.o
+          echo "--- B: -Wl,-static + no_fixup_chains"
+          clang $TC $CFLAGS $base -Wl,-static -Wl,-no_fixup_chains -o init-b init.c mini.o start.o
+          echo "--- C: -Wl,-static + no_fixup_chains + dead_strip + no_data_const + no_pie"
+          clang $TC $CFLAGS $base -Wl,-static -Wl,-no_fixup_chains -Wl,-dead_strip -Wl,-no_data_const -Wl,-no_pie -o init-c init.c mini.o start.o
+          for f in init-a init-b init-c; do
+            echo "== $f"; ls -l $f; file $f || true; shasum -a 256 $f
           done
 
       - uses: actions/upload-artifact@v4
         with:
-          name: init-arm64-variants
+          name: init-static-variants
           path: |
-            initbuild/init
-            initbuild/init-nopie
-            initbuild/init-plain
+            initbuild/init-a
+            initbuild/init-b
+            initbuild/init-c
           if-no-files-found: error
