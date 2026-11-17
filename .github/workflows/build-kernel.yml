@@ -111,7 +111,19 @@ jobs:
           set -euo pipefail
           cd /tmp/k/merge
           export XNU26_SRC="/tmp/k/merge/xnu-src/$XNU_TAG"
-          bash xnu26/build-macos.sh 2>&1 | tee /tmp/k/build.log
+          # Warnings are 90% of this log (a full kernel build emits ~800k lines of them) and none
+          # of them can fail the build; what has to survive the filter is the error lines.
+          set +e
+          bash xnu26/build-macos.sh 2>&1 \
+            | grep -vE 'warning: |note: |^ +[0-9]+ \||^ +\^|^ +\||warnings? generated|^\s*$' \
+            | tee /tmp/k/build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "=== error digest ==="
+            grep -E ': error:|\*\*\* ' /tmp/k/build.log | grep -v ignored | head -40 || true
+            exit 1
+          fi
           find /tmp/k -name 'mach.development.bcm2837' -type f > /tmp/k/found.txt || true
           cat /tmp/k/found.txt
           K=$(head -1 /tmp/k/found.txt)
