@@ -75,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth 1 --branch k90-port \
-            https://github.com/iola1999/hackios-xnu-userland.git /tmp/u
+            https://github.com/${{ github.repository }}.git /tmp/u
           echo "--- 25.0.7 patch set: $(ls /tmp/u/tools/mesa/*.patch | wc -l) files ---"
           echo "--- rebase-26 layer: $(ls /tmp/u/tools/mesa/rebase-26/*.patch | wc -l) files ---"
           ls /tmp/u/tools/mesa/rebase-26/
