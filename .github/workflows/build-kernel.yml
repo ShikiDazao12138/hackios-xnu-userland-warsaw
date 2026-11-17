@@ -1,0 +1,112 @@
+name: build xnu kernel
+
+# The K90 Ultra (warsaw) kernel: xnu-12377.121.6 with xnu26/patches (81 pieces) and xnu/files on
+# top, built for arm64 against the runner's own iPhoneOS SDK. tools/kernel/xnu26-xnu.tar.gz carries
+# the patch set and the device layer, so nothing of Apple's is stored in this repository.
+#
+# This is the same path tools/build-kernel.sh takes on the hackintosh, with the one difference the
+# machine makes: that host has no Xcode and builds against an SDK mirror, while the runner has both
+# Xcode and its SDK, which is what xnu26/deps-macos.sh prefers when it finds one.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-kernel.yml'
+      - 'tools/kernel/xnu26-xnu.tar.gz'
+
+env:
+  XNU_TAG: xnu-12377.121.6
+
+jobs:
+  kernel:
+    runs-on: macos-26
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          for v in 26.6 26.5 26.4 26.3 26.2; do
+            if [ -d "/Applications/Xcode_$v.app" ]; then
+              sudo xcode-select -s "/Applications/Xcode_$v.app"
+              echo "using Xcode $v"
+              break
+            fi
+          done
+          xcodebuild -version
+          echo "SDK: $(xcrun --sdk iphoneos --show-sdk-version) at $(xcrun --sdk iphoneos --show-sdk-path)"
+
+      - name: Install the build host
+        # make from homebrew is GNU make 4.x: Apple's makefiles need -O and parse nproc, neither of
+        # which /usr/bin/make (3.81, BSD) has.
+        run: |
+          set -euo pipefail
+          brew install make bison flex || true
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Lay the patch set and the device layer over the tag
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/k/merge
+          tar xzf tools/kernel/xnu26-xnu.tar.gz -C /tmp/k/merge
+          cd /tmp/k/merge
+          export XNU26_SRC="/tmp/k/merge/xnu-src/$XNU_TAG"
+          bash xnu26/apply.sh "$XNU26_SRC"
+          grep -c . xnu26/patches/series
+
+      - name: deps stage 1
+        run: |
+          set -euo pipefail
+          cd /tmp/k/merge
+          XNU26_SRC="/tmp/k/merge/xnu-src/$XNU_TAG" bash xnu26/deps-macos.sh --stage1
+
+      - name: export and install the kernel headers
+        run: |
+          set -euo pipefail
+          cd /tmp/k/merge
+          XNU26_SRC="/tmp/k/merge/xnu-src/$XNU_TAG" bash xnu26/build-macos.sh exporthdrs
+          XNU26_SRC="/tmp/k/merge/xnu-src/$XNU_TAG" bash xnu26/build-macos.sh installhdrs
+
+      - name: deps stage 2
+        run: |
+          set -euo pipefail
+          cd /tmp/k/merge
+          XNU26_SRC="/tmp/k/merge/xnu-src/$XNU_TAG" bash xnu26/deps-macos.sh --stage2
+
+      - name: build the kernel
+        run: |
+          set -euo pipefail
+          cd /tmp/k/merge
+          export XNU26_SRC="/tmp/k/merge/xnu-src/$XNU_TAG"
+          bash xnu26/build-macos.sh 2>&1 | tee /tmp/k/build.log
+          find /tmp/k -name 'mach.development.bcm2837' -type f > /tmp/k/found.txt || true
+          cat /tmp/k/found.txt
+          K=$(head -1 /tmp/k/found.txt)
+          [ -n "$K" ] || { echo "::error::no mach.development.bcm2837 produced"; tail -60 /tmp/k/build.log; exit 1; }
+          mkdir -p /tmp/k/out
+          cp "$K" /tmp/k/out/kernel.bin
+          shasum -a 256 /tmp/k/out/kernel.bin | tee /tmp/k/out/kernel.bin.sha256
+          ls -l /tmp/k/out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xnu-kernel-bcm2837
+          path: /tmp/k/out/
+          if-no-files-found: error
+
+      - name: Leave the kernel where a Windows host can fetch it
+        run: |
+          set -euo pipefail
+          cd /tmp/k/out
+          cp /tmp/k/build.log .
+          git init -q
+          git config user.name github-actions
+          git config user.email actions@github.com
+          git checkout -q -b kernel-artifacts
+          git add -A
+          git commit -qm "kernel: bcm2837 $(date -u +%Y%m%dT%H%M%SZ)"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push -q -f origin kernel-artifacts
+          echo "kernel-artifacts: $(git rev-parse --short HEAD)"
