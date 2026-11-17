@@ -9,26 +9,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compile init (arm64, static, freestanding)
+      - name: Compile init - arm64 static freestanding, Apple ld64
         run: |
           set -euo pipefail
           cd initbuild
+          xcodebuild -version || true
           clang --version
-          clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra -Ilibmini -c libmini/mini.c -o mini.o
-          clang -arch arm64 -c libmini/start.S -o start.o
-          base="clang -arch arm64 -Os -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra -Ilibmini"
-          ld="-Wl,-e,_start -Wl,-pagezero_size,0x100000000"
-          if ! $base -static $ld -o init init.c mini.o start.o; then
-            echo "static link failed, retrying without -static"
-            $base $ld -o init init.c mini.o start.o
-          fi
-          ls -l init
-          file init
-          otool -hv init
-          shasum -a 256 init
+          TC="-arch arm64 -miphoneos-version-min=14.0"
+          CFLAGS="-Os -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra -Ilibmini"
+          LD="-Wl,-e,_start -Wl,-pagezero_size,0x100000000"
+          clang $TC $CFLAGS -c libmini/mini.c -o mini.o
+          clang $TC -c libmini/start.S -o start.o
+          echo "A plain -static"
+          clang $TC $CFLAGS -static $LD -o init-a init.c mini.o start.o
+          echo "B -static -dead_strip"
+          clang $TC $CFLAGS -static $LD -Wl,-dead_strip -o init-b init.c mini.o start.o
+          for f in init-a init-b; do
+            echo "== $f"; ls -l $f; file $f || true
+            otool -hv $f
+            otool -l $f | grep -E "cmd LC_(UNIXTHREAD|MAIN|LOAD_DYLINKER|DYLD_INFO)" || true
+            shasum -a 256 $f
+          done
 
       - uses: actions/upload-artifact@v4
         with:
-          name: init-arm64
-          path: initbuild/init
+          name: init-macos
+          path: |
+            initbuild/init-a
+            initbuild/init-b
           if-no-files-found: error
