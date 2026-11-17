@@ -52,7 +52,16 @@ jobs:
           mkdir -p /tmp/k/merge
           tar xzf tools/kernel/xnu26-xnu.tar.gz -C /tmp/k/merge
           chmod +x /tmp/k/merge/xnu-deps/host/bin/* /tmp/k/merge/xnu26/*.sh
-          echo "/tmp/k/merge/xnu-deps/host/bin" >> "$GITHUB_PATH"
+          # Only the two shims the build lacks on a runner: iig (Apple ships it closed, the shim
+          # takes headers from the SDK) and nproc (macOS has none and Apple's makefiles call it).
+          # The xcrun/migcom/codesign shims in the same directory are for a host WITHOUT Xcode and
+          # must stay off PATH here, or they shadow the real tools and deps stage 1 fails.
+          mkdir -p /tmp/k/shims
+          cp /tmp/k/merge/xnu-deps/host/bin/iig /tmp/k/shims/
+          cp /tmp/k/merge/xnu-deps/host/bin/nproc /tmp/k/shims/
+          chmod +x /tmp/k/shims/*
+          echo "XNUDEPS=/tmp/k/merge/xnu-deps" >> "$GITHUB_ENV"
+          echo "/tmp/k/shims" >> "$GITHUB_PATH"
           cd /tmp/k/merge
           export XNU26_SRC="/tmp/k/merge/xnu-src/$XNU_TAG"
           bash xnu26/apply.sh "$XNU26_SRC"
