@@ -82,76 +82,28 @@ jobs:
           echo "--- air frontend: $(ls /tmp/u/tools/mesa/air | wc -l) entries ---"
           ls /tmp/u/tools/mesa/air | head -40
 
-      - name: Unpack Mesa and apply the patches
-        # The 25.0.7 patches do not all fit 26.2.5; rebase-26/0003-restore-*
-        # re-establishes what they carried. So a dropped hunk is tolerated here
-        # and recorded, exactly as mk-mesa.sh does with REBASE=26, and the .rej
-        # list travels with the artifact -- "which hunk did not reach the
-        # build" has no answer in a digest.
+      - name: Unpack Mesa and lay our overlay over it
+        # The 25.0.7 patch set does not survive 26.2.5: 14 of its 52 patches are
+        # dropped, and two of those carry the Darwin pieces this build needs. What
+        # tools/mesa/overlay-26.2.5.tar.gz holds is the state of a tree in which
+        # every patch that does apply has been applied and the result has built and
+        # run on the device. Unpacking it over the release reproduces that state
+        # instead of one that depends on patch context surviving a rebase.
         run: |
           set -euo pipefail
-          export PATH="$HOST_BIN:$PATH"
           mkdir -p /tmp/mesa/out
           cd /tmp/mesa
           curl -sSL --fail -o "mesa-$MESA_VERSION.tar.xz" \
-            "https://archive.mesa3d.org/mesa-$MESA_VERSION.tar.xz" || \
-          curl -sSL --fail -o "mesa-$MESA_VERSION.tar.xz" \
-            "https://mesa.freedesktop.org/archive/mesa-$MESA_VERSION.tar.xz"
+            "https://archive.mesa3d.org/mesa-$MESA_VERSION.tar.xz"
           echo "$MESA_SHA256  mesa-$MESA_VERSION.tar.xz" | shasum -a 256 -c -
           tar xJf "mesa-$MESA_VERSION.tar.xz"
-
-          PATCHLOG=/tmp/mesa/out/patch.log
-          : > "$PATCHLOG"
-          # One patch is refused on purpose. 0015-ir3-disk-cache-darwin-uuid gives
-          # the ir3 disk cache a Mach-O UUID where a Linux build reads a build-id
-          # note. On 26.2.5 it half-applies: the hunk that rewrites
-          # ir3_disk_cache_init() lands, the later one that deletes the matching
-          # #endif does not, so the file is left with an orphan #endif and no
-          # id_sha1 -- "use of undeclared identifier 'id_sha1'" and "#endif
-          # without #if", the first round's build failure. With -Dshader-cache=
-          # disabled (mk-mesa.sh's own default) there is no disk cache to give a
-          # UUID to, so refusing the patch costs nothing and keeps the file as
-          # 26.2.5 wrote it.
-          apply() {
-            for p in "$@"; do
-              name=$(basename "$p")
-              case "$name" in
-                *ir3-disk-cache*)
-                  printf '=== %s\nSKIPPED (shader cache off)\n' "$p" >> "$PATCHLOG"
-                  echo "skip     $name"
-                  continue ;;
-              esac
-              if gpatch -s --batch --no-backup-if-mismatch \
-                   -d "mesa-$MESA_VERSION" -p1 < "$p" >> "$PATCHLOG" 2>&1; then
-                echo "ok       $name"
-                printf '=== %s\nok\n' "$p" >> "$PATCHLOG"
-              else
-                echo "DROPPED  $name"
-                printf '=== %s\nDROPPED\n' "$p" >> "$PATCHLOG"
-              fi
-            done
-          }
-          apply $(find /tmp/u/tools/mesa -maxdepth 1 -name '*.patch' | LC_ALL=C sort)
-          apply $(find /tmp/u/tools/mesa/rebase-26 -maxdepth 1 -name '*.patch' | LC_ALL=C sort)
-
-          find "mesa-$MESA_VERSION" \( -name '*.rej' -o -name '*.orig' \) -type f \
-            | LC_ALL=C sort > /tmp/mesa/out/patch-rejects.txt
-          echo "--- rejects: $(grep -c . /tmp/mesa/out/patch-rejects.txt || true) ---"
-          cat /tmp/mesa/out/patch-rejects.txt
-          echo "--- dropped hunks: $(grep -c DROPPED "$PATCHLOG" || true) of $(grep -c '^=== ' "$PATCHLOG" || true) patches ---"
-          # What a reject holds is the only record of what did not reach the
-          # build; the paths alone do not say whether it mattered.
-          for r in $(cat /tmp/mesa/out/patch-rejects.txt); do
-            echo "--- $r ---"
-            head -30 "$r"
-          done
-
-          # Ours, kept in the repository, always the current ones.
+          echo "--- overlay ---"
+          tar xzf /tmp/u/tools/mesa/overlay-26.2.5.tar.gz -C "mesa-$MESA_VERSION"
+          echo "overlay entries: $(tar tzf /tmp/u/tools/mesa/overlay-26.2.5.tar.gz | wc -l)"
           rm -rf "mesa-$MESA_VERSION/src/annibale-drm" "mesa-$MESA_VERSION/src/compiler/air"
           cp -r /tmp/u/tools/mesa/annibale-drm "mesa-$MESA_VERSION/src/annibale-drm"
           cp -r /tmp/u/tools/mesa/air "mesa-$MESA_VERSION/src/compiler/air"
-          echo "--- air frontend in tree: $(ls "mesa-$MESA_VERSION/src/compiler/air" | wc -l) entries ---"
-
+          echo "air frontend in tree: $(ls "mesa-$MESA_VERSION/src/compiler/air" | wc -l) entries"
       - name: meson setup with an arm64e cross file
         # The -D list is setup-mesa-arm64e.py's, which is the list the iOS 26
         # library was measured with -- with one deliberate difference:
@@ -202,7 +154,7 @@ jobs:
             -Db_ndebug=true -Dplatforms= -Dgallium-drivers=softpipe,freedreno -Dfreedreno-kmds=msm \
             -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dosmesa=true \
             -Dllvm=disabled -Dshared-glapi=enabled -Dgles1=disabled -Dgles2=enabled -Dopengl=true \
-            -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled -Dshader-cache=disabled \
+            -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled -Dshader-cache=enabled \
             -Dvalgrind=disabled -Dlibunwind=disabled -Dglvnd=disabled -Dvideo-codecs= -Dtools= \
             -Dgallium-va=disabled -Dlmsensors=disabled -Dbuild-tests=false 2>&1 \
             | tee /tmp/mesa/out/meson-setup.log
