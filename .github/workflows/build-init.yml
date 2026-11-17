@@ -5,7 +5,7 @@ on:
 
 jobs:
   init:
-    runs-on: macos-26
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -14,30 +14,21 @@ jobs:
           set -euo pipefail
           cd initbuild
           clang --version
-          CC="clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra"
-          $CC -Ilibmini -c libmini/mini.c -o mini.o
+          clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra -Ilibmini -c libmini/mini.c -o mini.o
           clang -arch arm64 -c libmini/start.S -o start.o
-          $CC -Ilibmini -Wl,-e,_start -Wl,-pagezero_size,0x100000000 -o init init.c mini.o start.o
+          base="clang -arch arm64 -Os -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra -Ilibmini"
+          ld="-Wl,-e,_start -Wl,-pagezero_size,0x100000000"
+          if ! $base -static $ld -o init init.c mini.o start.o; then
+            echo "static link failed, retrying without -static"
+            $base $ld -o init init.c mini.o start.o
+          fi
           ls -l init
           file init
           otool -hv init
-
-      - name: Report
-        run: |
-          cd initbuild
           shasum -a 256 init
-          otool -l init | grep -A4 LC_UNIXTHREAD | head -20 || true
 
       - uses: actions/upload-artifact@v4
         with:
           name: init-arm64
           path: initbuild/init
           if-no-files-found: error
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: init-logs
-          path: |
-            initbuild/mini.o
-            initbuild/start.o
-          if-no-files-found: ignore
