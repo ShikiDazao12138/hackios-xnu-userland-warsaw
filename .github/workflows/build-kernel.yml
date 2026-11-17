@@ -86,6 +86,11 @@ jobs:
             sed -i '' 's|^\([^#].*TestDextRematch.*\)|#\1|' "$f"
           done
           grep -rn TestDextRematch "$XNU26_SRC/iokit/conf" | head -5 || true
+          # Apple's osfmk/conf/files leaves mc_ce_arm64.c out, so the link fails on the symbols
+          # minicrypto's SHA-512 path calls (_mc_ce_sha512_compress and friends).
+          grep -q 'minicrypto/mc_ce_arm64.c' "$XNU26_SRC/osfmk/conf/files" || \
+            printf 'osfmk/minicrypto/mc_ce_arm64.c\tstandard\n' >> "$XNU26_SRC/osfmk/conf/files"
+          grep -n 'mc_ce_arm64' "$XNU26_SRC/osfmk/conf/files" || true
 
       - name: deps stage 1
         run: |
