@@ -1,0 +1,40 @@
+name: build-init-linux
+
+on:
+  workflow_dispatch:
+
+jobs:
+  init:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld
+          clang --version
+          ls /usr/lib/llvm-*/bin/ | grep -i lld || true
+
+      - name: Compile init for arm64 Apple (Mach-O, freestanding)
+        run: |
+          set -euo pipefail
+          cd initbuild
+          TC="--target=arm64-apple-ios14.0"
+          CFLAGS="-Os -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra -Ilibmini"
+          clang $TC $CFLAGS -c libmini/mini.c -o mini.o
+          clang $TC -c libmini/start.S -o start.o
+          clang $TC $CFLAGS -fuse-ld=lld -static \
+            -Wl,-e,_start -Wl,-pagezero_size,0x100000000 \
+            -Wl,-platform_version,ios,14.0,14.0 \
+            -o init init.c mini.o start.o
+          ls -l init
+          file init
+          od -An -tx1 -N8 init
+          shasum -a 256 init
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: init-arm64-linux
+          path: initbuild/init
+          if-no-files-found: error
