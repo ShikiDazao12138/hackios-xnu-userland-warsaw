@@ -82,10 +82,15 @@ jobs:
           # TestDextRematch: iig cannot generate its IOKit metaclass, and the build host's tree
           # comments these entries out for the same reason. This kernel loads no dext, so nothing
           # the device needs comes from them.
+          # Two things come out of iokit/conf/files here, both because the iig shim cannot produce
+          # what they need: TestDextRematch's metaclass, and IOExtensiblePaniclog's Dispatch, which
+          # the kernel then fails to link (vtable for IOExtensiblePaniclog, undefined symbol).
+          # The build host's tree comments the same lines out.
           for f in "$XNU26_SRC"/iokit/conf/files*; do
             sed -i '' 's|^\([^#].*TestDextRematch.*\)|#\1|' "$f"
+            sed -i '' 's|^\([^#].*IOExtensiblePaniclog.*\)|#\1|' "$f"
           done
-          grep -rn TestDextRematch "$XNU26_SRC/iokit/conf" | head -5 || true
+          grep -rn 'TestDextRematch\|IOExtensiblePaniclog' "$XNU26_SRC/iokit/conf" | head -10 || true
           # Apple's osfmk/conf/files leaves mc_ce_arm64.c out, so the link fails on the symbols
           # minicrypto's SHA-512 path calls (_mc_ce_sha512_compress and friends).
           grep -q 'minicrypto/mc_ce_arm64.c' "$XNU26_SRC/osfmk/conf/files" || \
