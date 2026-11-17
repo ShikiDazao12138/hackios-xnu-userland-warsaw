@@ -134,9 +134,15 @@ jobs:
             grep -E ': error:|\*\*\* ' /tmp/k/build.log | grep -v ignored | head -40 || true
             exit 1
           fi
-          find /tmp/k -name 'mach.development.bcm2837' -type f > /tmp/k/found.txt || true
-          cat /tmp/k/found.txt
-          K=$(head -1 /tmp/k/found.txt)
+          # The build leaves an unstripped intermediate next to the kernel; both names start with
+          # mach.development.bcm2837, and taking the first find hit picked the 66 MB one instead of
+          # the 19 MB image the payload carries. List them by size, then take the build's own path.
+          for f in $(find /tmp/k -type f -name 'mach.development.bcm2837*'); do
+            echo "$(stat -f%z "$f") $f"
+          done | sort -n | tee /tmp/k/cands.txt
+          K="/tmp/k/merge/xnu-src/$XNU_TAG/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837"
+          [ -f "$K" ] || K=$(awk '/mach\.development\.bcm2837$/{print $2; exit}' /tmp/k/cands.txt)
+          echo "kernel source: $K"
           [ -n "$K" ] || { echo "::error::no mach.development.bcm2837 produced"; tail -60 /tmp/k/build.log; exit 1; }
           mkdir -p /tmp/k/out
           cp "$K" /tmp/k/out/kernel.bin
@@ -150,6 +156,9 @@ jobs:
           if-no-files-found: error
 
       - name: Leave the kernel where a Windows host can fetch it
+        # The artifact above is the primary route; this branch is a convenience for a host without a
+        # token. It has failed on this fork without failing the build, so it is not allowed to.
+        continue-on-error: true
         run: |
           set -euo pipefail
           cd /tmp/k/out
