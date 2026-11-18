@@ -1,7 +1,7 @@
-diff --git a/bsd/dev/adreno8/adreno8_smmu.c b/bsd/dev/adreno8/adreno8_smmu.c
+diff --git a/merge/xnu/files/bsd/dev/adreno8/adreno8_smmu.c b/merge/xnu/files/bsd/dev/adreno8/adreno8_smmu.c
 index 1725377..d226036 100644
---- a/bsd/dev/adreno8/adreno8_smmu.c
-+++ b/bsd/dev/adreno8/adreno8_smmu.c
+--- a/merge/xnu/files/bsd/dev/adreno8/adreno8_smmu.c
++++ b/merge/xnu/files/bsd/dev/adreno8/adreno8_smmu.c
 @@ -448,10 +448,26 @@ adreno8_space_find_range(struct adreno8_gpu_space *space, uint32_t start, uint32
  	}
  	candidate = ((uint64_t)start + alignment - 1) & ~(uint64_t)(alignment - 1);
