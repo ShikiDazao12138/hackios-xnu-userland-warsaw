@@ -105,6 +105,7 @@ jobs:
           cp -r /tmp/u/tools/mesa/air "mesa-$MESA_VERSION/src/compiler/air"
           echo "air frontend in tree: $(ls "mesa-$MESA_VERSION/src/compiler/air" | wc -l) entries"
       - name: Apply the Mesa hotfix patches
+        if: false   # control run: baseline without 0019, to tell a patch problem from an environment change
         # tools/mesa/hotfix/*.patch go on after the overlay AND after the AIR frontend has been
         # copied in, so every hunk lands in the tree that is actually compiled. 0019 touches only
         # the freedreno core (context/draw/texture/fd6), not air/, so the copy above cannot undo it.
