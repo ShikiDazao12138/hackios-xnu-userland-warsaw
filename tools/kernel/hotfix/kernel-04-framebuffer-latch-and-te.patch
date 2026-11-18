@@ -1,8 +1,8 @@
 diff --git a/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc b/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
-index c91294f..283491b 100644
+index c91294f..7c6bb1a 100644
 --- a/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
 +++ b/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
-@@ -78,6 +78,11 @@ static struct {
+@@ -78,8 +78,18 @@ static struct {
  	uint64_t        taken;                    /* mach_absolute_time when CTL_FLUSH was observed clear */
  	uint32_t        taken_frame;              /* INTF_FRAME_COUNT at that same observation */
  	bool            taken_valid;
@@ -13,8 +13,15 @@ index c91294f..283491b 100644
 +	uint32_t        te_count;
  } flip;
  
++#define FLIP_INTF_TEAR_INT_EN       0x2a0
++#define FLIP_INTF_TEAR_INT_STATUS   0x2a4
++#define FLIP_INTF_TEAR_COUNT        0x298
++#define FLIP_TE_INTID               115u        /* DT <0 0x53 4>: 32 + 83 */
++
  static inline uint32_t
-@@ -93,6 +98,53 @@ flip_wr(uint32_t off, uint32_t value)
+ flip_rd(uint32_t off)
+ {
+@@ -93,6 +103,53 @@ flip_wr(uint32_t off, uint32_t value)
  	__builtin_arm_dsb(0xf);
  }
  
@@ -68,7 +75,7 @@ index c91294f..283491b 100644
  /*
   * The register clocks, as Linux's dispcc-sm8750.c and gcc-sm8750.c name them. With them off a read
   * of the display controller never completes and the board resets (hakios-arm64e-dada, runs scan1
-@@ -215,20 +267,85 @@ flip_note_taken(void)
+@@ -215,20 +272,80 @@ flip_note_taken(void)
  	flip.taken_valid = true;
  }
  
@@ -96,11 +103,6 @@ index c91294f..283491b 100644
 + * INTF_TEAR_INT_EN 0x2a0, INTF_TEAR_INT_STATUS 0x2a4, INTF_TEAR_INT_COUNT_VAL 0x298.
 + */
 +static TUNABLE(uint32_t, gTE, "fb_te", 0);
-+#define FLIP_INTF_TEAR_INT_EN       0x2a0
-+#define FLIP_INTF_TEAR_INT_STATUS   0x2a4
-+#define FLIP_INTF_TEAR_COUNT        0x298
-+#define FLIP_TE_INTID               115u        /* DT <0 0x53 4>: 32 + 83 */
-+
 +extern kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge,
 +    void (*handler)(void *context, uint32_t intid), void *context);
 +
