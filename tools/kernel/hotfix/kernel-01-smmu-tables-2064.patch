@@ -1,7 +1,7 @@
-diff --git a/bsd/dev/adreno8/adreno8_private.h b/bsd/dev/adreno8/adreno8_private.h
+diff --git a/merge/xnu/files/bsd/dev/adreno8/adreno8_private.h b/merge/xnu/files/bsd/dev/adreno8/adreno8_private.h
 index 76561b5..5692bdb 100644
---- a/bsd/dev/adreno8/adreno8_private.h
-+++ b/bsd/dev/adreno8/adreno8_private.h
+--- a/merge/xnu/files/bsd/dev/adreno8/adreno8_private.h
++++ b/merge/xnu/files/bsd/dev/adreno8/adreno8_private.h
 @@ -79,7 +79,8 @@ struct adreno8_space_table {
  struct adreno8_gpu_space {
  	const char *name;
