@@ -103,15 +103,17 @@ jobs:
         # by the double buffer sequence. Their paths are relative to the xnu source root.
         run: |
           set -euo pipefail
-          SRC="/tmp/k/merge/xnu-src/$XNU_TAG"
+          # build-macos.sh re-copies xnu26/xnu/files into the source tree on every run, so the
+          # patches go into that copy, not into xnu-src (they would be overwritten there).
+          DEV="/tmp/k/merge/xnu/files"
           shopt -s nullglob
           for p in tools/kernel/hotfix/*.patch; do
             echo "applying $p"
-            patch -p1 -d "$SRC" < "$p"
+            patch -p1 -d /tmp/k < "$p"
           done
-          grep -n 'tables\[2064\]' "$SRC/bsd/dev/adreno8/adreno8_private.h"
-          grep -n 'leaf_end' "$SRC/bsd/dev/adreno8/adreno8_smmu.c"
-          grep -n 'fAllChangedSeq > job->bufferSeq' "$SRC/iokit/Kernel/MiniFramebufferRows.inc"
+          grep -n 'tables\[2064\]' "$DEV/bsd/dev/adreno8/adreno8_private.h"
+          grep -n 'leaf_end' "$DEV/bsd/dev/adreno8/adreno8_smmu.c"
+          grep -n 'fAllChangedSeq > job->bufferSeq' "$DEV/iokit/Kernel/MiniFramebufferRows.inc"
       - name: deps stage 1
         run: |
           set -euo pipefail
