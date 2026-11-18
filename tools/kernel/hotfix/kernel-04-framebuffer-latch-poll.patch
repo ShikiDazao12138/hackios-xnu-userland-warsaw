@@ -1,0 +1,48 @@
+diff --git a/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc b/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
+index c91294f..0e46a35 100644
+--- a/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
++++ b/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
+@@ -215,20 +215,39 @@ flip_note_taken(void)
+ 	flip.taken_valid = true;
+ }
+ 
++/*
++ * How finely the latch is watched, and how long it is waited for. IOSleep(1) is the coarsest step a
++ * sleeping wait can take, and the latch can happen anywhere inside it: the frame then starts up to
++ * 1 ms late and flip.taken records a time up to 1 ms after the refresh that actually took it, which
++ * is the "C" segment our measurements show sitting at one whole beat. fb_latch_poll_us=200 spins in
++ * 200 us steps instead (a busy wait, so it costs the presenter's processor), and fb_latch_us bounds
++ * the whole wait: a frame that cannot be taken inside that window is given up on at once rather than
++ * holding the next frame back for 40 ms.
++ */
++static TUNABLE(uint32_t, gLatchPoll, "fb_latch_poll_us", 1000);
++static TUNABLE(uint32_t, gLatchWait, "fb_latch_us", 40000);
++
+ /* Until CTL has taken the last flush (its bits clear at the refresh that latches them), LIMIT_US at most. */
+ static bool
+ flip_taken(uint32_t limit_us, bool may_sleep)
+ {
++	uint32_t poll = gLatchPoll < 50 ? 50 : (gLatchPoll > 10000 ? 10000 : gLatchPoll);
++
++	if (limit_us > gLatchWait) {
++		limit_us = gLatchWait;
++	}
+ 	flip.taken_valid = false;
+-	for (uint32_t waited = 0; waited < limit_us; waited += may_sleep && waited >= 200 ? 1000 : 50) {
++	for (uint32_t waited = 0; waited < limit_us; waited += poll) {
+ 		if ((flip_rd(FLIP_CTL(flip.ctl) + FLIP_CTL_FLUSH) & flip.flush) == 0) {
+ 			flip_note_taken();
+ 			return true;
+ 		}
+-		if (may_sleep && waited >= 200) {
+-			IOSleep(1);
++		/* A step of 200 us or less is spun on: it is the difference between a frame landing in this
++		 * refresh and the next one. Longer steps sleep, which needs whole milliseconds. */
++		if (!may_sleep || poll <= 200) {
++			delay(poll);
+ 		} else {
+-			delay(50);
++			IOSleep(poll / 1000 > 0 ? poll / 1000 : 1);
+ 		}
+ 	}
+ 	if ((flip_rd(FLIP_CTL(flip.ctl) + FLIP_CTL_FLUSH) & flip.flush) == 0) {
