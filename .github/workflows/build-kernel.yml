@@ -97,6 +97,21 @@ jobs:
             printf 'osfmk/minicrypto/mc_ce_arm64.c\tstandard\n' >> "$XNU26_SRC/osfmk/conf/files"
           grep -n 'mc_ce_arm64' "$XNU26_SRC/osfmk/conf/files" || true
 
+      - name: Apply the K90U hotfix patches
+        # tools/kernel/hotfix/*.patch carry the device-side fixes on top of the tarball: SMMU space
+        # tables 1024 -> 2064, the empty-leaf skip in adreno8_space_find_range, and allDirty judged
+        # by the double buffer sequence. Their paths are relative to the xnu source root.
+        run: |
+          set -euo pipefail
+          SRC="/tmp/k/merge/xnu-src/$XNU_TAG"
+          shopt -s nullglob
+          for p in tools/kernel/hotfix/*.patch; do
+            echo "applying $p"
+            patch -p1 -d "$SRC" < "$p"
+          done
+          grep -n 'tables\[2064\]' "$SRC/bsd/dev/adreno8/adreno8_private.h"
+          grep -n 'leaf_end' "$SRC/bsd/dev/adreno8/adreno8_smmu.c"
+          grep -n 'fAllChangedSeq > job->bufferSeq' "$SRC/iokit/Kernel/MiniFramebufferRows.inc"
       - name: deps stage 1
         run: |
           set -euo pipefail
