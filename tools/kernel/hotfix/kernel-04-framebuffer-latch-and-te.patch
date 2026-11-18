@@ -1,0 +1,170 @@
+diff --git a/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc b/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
+index c91294f..283491b 100644
+--- a/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
++++ b/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
+@@ -78,6 +78,11 @@ static struct {
+ 	uint64_t        taken;                    /* mach_absolute_time when CTL_FLUSH was observed clear */
+ 	uint32_t        taken_frame;              /* INTF_FRAME_COUNT at that same observation */
+ 	bool            taken_valid;
++	IOLock *        te_lock;                  /* fb_te: waiters sleep on this, the tear interrupt wakes them */
++	uint32_t        te_seq;                   /* incremented by every tear interrupt */
++	bool            te_on;                    /* the interrupt was enabled and attached */
++	uint64_t        te_last;                  /* when the last one arrived */
++	uint32_t        te_count;
+ } flip;
+ 
+ static inline uint32_t
+@@ -93,6 +98,53 @@ flip_wr(uint32_t off, uint32_t value)
+ 	__builtin_arm_dsb(0xf);
+ }
+ 
++static void
++flip_te_intr(void * context, uint32_t intid)
++{
++	(void) context;
++	(void) intid;
++	flip.te_count++;
++	flip.te_last = mach_absolute_time();
++	if (flip.te_lock != NULL) {
++		/* the event is the sequence itself: a waiter compares before it sleeps, so no wakeup is lost */
++		flip.te_seq++;
++		IOLockWakeup(flip.te_lock, &flip.te_seq, false);
++	}
++}
++
++/*
++ * Turn the tear interrupt on for the INTF the panel is driven from. Runs after flip.pipes/ctl/intf are
++ * known, so the register written is the one the display actually uses. fb_te=1 only.
++ */
++static void
++flip_te_enable(void)
++{
++	uint32_t at = FLIP_INTF(flip.intf);
++
++	flip.te_lock = IOLockAlloc();
++	if (flip.te_lock == NULL) {
++		printf("MiniIOMobileFramebuffer: te: no lock, staying on the polling latch\n");
++		return;
++	}
++	IOLockLock(flip.te_lock);
++	flip.te_seq++;
++	IOLockUnlock(flip.te_lock);
++	/* the count first, then the enable: a tear that arrives inside this frame is still seen */
++	uint32_t before = flip_rd(at + FLIP_INTF_TEAR_COUNT);
++	flip_wr(at + FLIP_INTF_TEAR_INT_EN, 1);
++	if (gic_v3_spi_attach(FLIP_TE_INTID, false, flip_te_intr, NULL) != KERN_SUCCESS) {
++		flip_wr(at + FLIP_INTF_TEAR_INT_EN, 0);
++		printf("MiniIOMobileFramebuffer: te: SPI %u not attached, staying on the polling latch\n",
++		    FLIP_TE_INTID);
++		return;
++	}
++	flip.te_on = true;
++	printf("MiniIOMobileFramebuffer: te: intf%u tear int en %08x status %08x count %u -> %u; SPI %u attached\n",
++	    flip.intf, flip_rd(at + FLIP_INTF_TEAR_INT_EN), flip_rd(at + FLIP_INTF_TEAR_INT_STATUS),
++	    before, flip_rd(at + FLIP_INTF_TEAR_COUNT), FLIP_TE_INTID);
++}
++
++
+ /*
+  * The register clocks, as Linux's dispcc-sm8750.c and gcc-sm8750.c name them. With them off a read
+  * of the display controller never completes and the board resets (hakios-arm64e-dada, runs scan1
+@@ -215,20 +267,85 @@ flip_note_taken(void)
+ 	flip.taken_valid = true;
+ }
+ 
++/*
++ * How finely the latch is watched, and how long it is waited for. IOSleep(1) is the coarsest step a
++ * sleeping wait can take, and the latch can happen anywhere inside it: the frame then starts up to
++ * 1 ms late and flip.taken records a time up to 1 ms after the refresh that actually took it, which
++ * is the "C" segment our measurements show sitting at one whole beat. fb_latch_poll_us=200 spins in
++ * 200 us steps instead (a busy wait, so it costs the presenter's processor), and fb_latch_us bounds
++ * the whole wait: a frame that cannot be taken inside that window is given up on at once rather than
++ * holding the next frame back for 40 ms.
++ */
++static TUNABLE(uint32_t, gLatchPoll, "fb_latch_poll_us", 1000);
++static TUNABLE(uint32_t, gLatchWait, "fb_latch_us", 40000);
++
++/*
++ * The panel's tear signal (GPIO_86) is wired to mdss_mdp's SPI 115, and nothing in this tree has ever
++ * attached it: the beat is inferred by polling CTL_FLUSH, so a frame starts up to a millisecond late
++ * and the wait has to be bounded by hand. With fb_te=1 the tear interrupt is enabled on the active
++ * INTF, attached, and the latch wait sleeps until it arrives instead of polling; the flush bit stays
++ * authoritative, and a wait that sees no tear inside fb_latch_us falls back to the polling loop, so a
++ * register that turns out not to enable anything costs a slower frame, not a black panel.
++ *
++ * Offsets are mainline's (disp/dpu1/dpu_hw_intf.h), the ones this file's other INTF writes use:
++ * INTF_TEAR_INT_EN 0x2a0, INTF_TEAR_INT_STATUS 0x2a4, INTF_TEAR_INT_COUNT_VAL 0x298.
++ */
++static TUNABLE(uint32_t, gTE, "fb_te", 0);
++#define FLIP_INTF_TEAR_INT_EN       0x2a0
++#define FLIP_INTF_TEAR_INT_STATUS   0x2a4
++#define FLIP_INTF_TEAR_COUNT        0x298
++#define FLIP_TE_INTID               115u        /* DT <0 0x53 4>: 32 + 83 */
++
++extern kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge,
++    void (*handler)(void *context, uint32_t intid), void *context);
++
+ /* Until CTL has taken the last flush (its bits clear at the refresh that latches them), LIMIT_US at most. */
+ static bool
+ flip_taken(uint32_t limit_us, bool may_sleep)
+ {
++	uint32_t poll = gLatchPoll < 50 ? 50 : (gLatchPoll > 10000 ? 10000 : gLatchPoll);
++
++	if (limit_us > gLatchWait) {
++		limit_us = gLatchWait;
++	}
+ 	flip.taken_valid = false;
+-	for (uint32_t waited = 0; waited < limit_us; waited += may_sleep && waited >= 200 ? 1000 : 50) {
++	/*
++	 * With the tear interrupt attached, sleep on it instead of polling: the panel wakes us at the
++	 * refresh that takes the flush, so there is no 1 ms quantisation and no busy wait. The flush bit
++	 * stays the authority -- a wakeup only says a refresh happened -- and anything unexpected (no
++	 * tear inside the window, a wait that returns early) drops through to the polling loop below, so
++	 * a register that enables nothing costs one slow frame rather than a hung presenter.
++	 */
++	if (flip.te_on && may_sleep && flip.te_lock != NULL) {
++		uint64_t ticks, deadline = mach_absolute_time();
++
++		nanoseconds_to_absolutetime((uint64_t) limit_us * 1000ULL, &ticks);
++		deadline += ticks;
++		while (mach_absolute_time() < deadline) {
++			if ((flip_rd(FLIP_CTL(flip.ctl) + FLIP_CTL_FLUSH) & flip.flush) == 0) {
++				flip_note_taken();
++				return true;
++			}
++			IOLockLock(flip.te_lock);
++			IOLockSleepDeadline(flip.te_lock, &flip.te_seq, deadline, THREAD_UNINT);
++			IOLockUnlock(flip.te_lock);
++		}
+ 		if ((flip_rd(FLIP_CTL(flip.ctl) + FLIP_CTL_FLUSH) & flip.flush) == 0) {
+ 			flip_note_taken();
+ 			return true;
+ 		}
+-		if (may_sleep && waited >= 200) {
+-			IOSleep(1);
++	}
++	for (uint32_t waited = 0; waited < limit_us; waited += poll) {
++		if ((flip_rd(FLIP_CTL(flip.ctl) + FLIP_CTL_FLUSH) & flip.flush) == 0) {
++			flip_note_taken();
++			return true;
++		}
++		/* A step of 200 us or less is spun on: it is the difference between a frame landing in this
++		 * refresh and the next one. Longer steps sleep, which needs whole milliseconds. */
++		if (!may_sleep || poll <= 200) {
++			delay(poll);
+ 		} else {
+-			delay(50);
++			IOSleep(poll / 1000 > 0 ? poll / 1000 : 1);
+ 		}
+ 	}
+ 	if ((flip_rd(FLIP_CTL(flip.ctl) + FLIP_CTL_FLUSH) & flip.flush) == 0) {
+@@ -345,6 +462,9 @@ flip_start(uint64_t fb, uint8_t * fbBase, uint32_t bytes, uint32_t rows)
+ 	flip.band0 = INT32_MAX;
+ 	flip.band1 = INT32_MIN;
+ 	flip.ready = true;
++	if (gTE) {
++		flip_te_enable();
++	}
+ 	IOLog("MiniIOMobileFramebuffer: flip: ctl%u, pipes %#x (flush %#x%s); frames flip between %#llx and %#llx\n",
+ 	    flip.ctl, flip.pipes, flip.flush, flip.needStart ? ", a start each" : "", fb, b);
+ }
