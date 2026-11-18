@@ -1,7 +1,7 @@
-diff --git a/iokit/Kernel/MiniFramebufferRows.inc b/iokit/Kernel/MiniFramebufferRows.inc
+diff --git a/merge/xnu/files/iokit/Kernel/MiniFramebufferRows.inc b/merge/xnu/files/iokit/Kernel/MiniFramebufferRows.inc
 index e80e9ec..2622f86 100644
---- a/iokit/Kernel/MiniFramebufferRows.inc
-+++ b/iokit/Kernel/MiniFramebufferRows.inc
+--- a/merge/xnu/files/iokit/Kernel/MiniFramebufferRows.inc
++++ b/merge/xnu/files/iokit/Kernel/MiniFramebufferRows.inc
 @@ -340,6 +340,10 @@ IOMobileFramebuffer::dirtyBand(RowJob * job)
  	job->by1 = job->py0 + (int32_t) ((int64_t) (last + 2) * span / job->sh) + 2;
  	job->by0 = job->by0 < job->py0 ? job->py0 : job->by0;
