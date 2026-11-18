@@ -104,6 +104,21 @@ jobs:
           cp -r /tmp/u/tools/mesa/annibale-drm "mesa-$MESA_VERSION/src/annibale-drm"
           cp -r /tmp/u/tools/mesa/air "mesa-$MESA_VERSION/src/compiler/air"
           echo "air frontend in tree: $(ls "mesa-$MESA_VERSION/src/compiler/air" | wc -l) entries"
+      - name: Apply the Mesa hotfix patches
+        # tools/mesa/hotfix/*.patch go on after the overlay AND after the AIR frontend has been
+        # copied in, so every hunk lands in the tree that is actually compiled. 0019 touches only
+        # the freedreno core (context/draw/texture/fd6), not air/, so the copy above cannot undo it.
+        run: |
+          set -euo pipefail
+          export PATH="$HOST_BIN:$PATH"
+          shopt -s nullglob
+          for p in /tmp/u/tools/mesa/hotfix/*.patch; do
+            echo "applying $(basename "$p")"
+            gpatch -p1 --batch --no-backup-if-mismatch -d "/tmp/mesa/mesa-$MESA_VERSION" < "$p"
+          done
+          grep -n 'active_slots' /tmp/mesa/mesa-$MESA_VERSION/src/gallium/drivers/freedreno/freedreno_context.h
+          grep -n 'fd_context_all_dirty(ctx)' /tmp/mesa/mesa-$MESA_VERSION/src/gallium/drivers/freedreno/freedreno_draw.c
+          grep -n 'MIN2(tex->num_textures, 255u)' /tmp/mesa/mesa-$MESA_VERSION/src/gallium/drivers/freedreno/a6xx/fd6_texture.cc
       - name: meson setup with an arm64e cross file
         # The -D list is setup-mesa-arm64e.py's, which is the list the iOS 26
         # library was measured with -- with one deliberate difference:
