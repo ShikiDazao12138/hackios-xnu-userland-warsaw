@@ -1,12 +1,23 @@
 diff --git a/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc b/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
-index c91294f..7c6bb1a 100644
+index c91294f..6daa62d 100644
 --- a/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
 +++ b/merge/xnu/files/iokit/Kernel/MiniFramebufferFlip.inc
-@@ -78,8 +78,18 @@ static struct {
+@@ -23,6 +23,9 @@
+ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ extern "C" vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
+ extern "C" boolean_t pmap_valid_address(uint64_t pa);
++/* The GIC SPI attach other annibale drivers declare the same way (annibale_bt_uart.c, adreno8_hfi.c). */
++extern "C" kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge,
++    void (*handler)(void *context, uint32_t intid), void *context);
+ 
+ static TUNABLE(uint32_t, gFlip, "fb_flip", 0);
+ 
+@@ -78,8 +81,19 @@ static struct {
  	uint64_t        taken;                    /* mach_absolute_time when CTL_FLUSH was observed clear */
  	uint32_t        taken_frame;              /* INTF_FRAME_COUNT at that same observation */
  	bool            taken_valid;
 +	IOLock *        te_lock;                  /* fb_te: waiters sleep on this, the tear interrupt wakes them */
++	uint32_t        te_at;                    /* the INTF base the handler clears the status at */
 +	uint32_t        te_seq;                   /* incremented by every tear interrupt */
 +	bool            te_on;                    /* the interrupt was enabled and attached */
 +	uint64_t        te_last;                  /* when the last one arrived */
@@ -21,19 +32,30 @@ index c91294f..7c6bb1a 100644
  static inline uint32_t
  flip_rd(uint32_t off)
  {
-@@ -93,6 +103,53 @@ flip_wr(uint32_t off, uint32_t value)
+@@ -93,6 +107,70 @@ flip_wr(uint32_t off, uint32_t value)
  	__builtin_arm_dsb(0xf);
  }
  
 +static void
 +flip_te_intr(void * context, uint32_t intid)
 +{
++	uint32_t status = flip_rd(flip.te_at + FLIP_INTF_TEAR_INT_STATUS);
++
 +	(void) context;
 +	(void) intid;
++	/*
++	 * The status bits are write-1-to-clear. The first version of this did not clear them, so the line
++	 * stayed asserted and the GIC redelivered the same tear: an interrupt storm that took the frame
++	 * rate from 23.8% dropped to 90.3% dropped. Clearing is not a courtesy here, it is the feature.
++	 */
++	if (status == 0) {
++		return;
++	}
++	flip_wr(flip.te_at + FLIP_INTF_TEAR_INT_STATUS, status);
 +	flip.te_count++;
 +	flip.te_last = mach_absolute_time();
-+	if (flip.te_lock != NULL) {
-+		/* the event is the sequence itself: a waiter compares before it sleeps, so no wakeup is lost */
++	/* Only a frame actually waiting for the latch has anything to gain from a wakeup. */
++	if (flip.pending && flip.te_lock != NULL) {
 +		flip.te_seq++;
 +		IOLockWakeup(flip.te_lock, &flip.te_seq, false);
 +	}
@@ -48,6 +70,7 @@ index c91294f..7c6bb1a 100644
 +{
 +	uint32_t at = FLIP_INTF(flip.intf);
 +
++	flip.te_at = at;
 +	flip.te_lock = IOLockAlloc();
 +	if (flip.te_lock == NULL) {
 +		printf("MiniIOMobileFramebuffer: te: no lock, staying on the polling latch\n");
@@ -58,6 +81,11 @@ index c91294f..7c6bb1a 100644
 +	IOLockUnlock(flip.te_lock);
 +	/* the count first, then the enable: a tear that arrives inside this frame is still seen */
 +	uint32_t before = flip_rd(at + FLIP_INTF_TEAR_COUNT);
++	/* anything already latched belongs to the loader's frames: drop it before the line is enabled */
++	uint32_t stale = flip_rd(at + FLIP_INTF_TEAR_INT_STATUS);
++	if (stale != 0) {
++		flip_wr(at + FLIP_INTF_TEAR_INT_STATUS, stale);
++	}
 +	flip_wr(at + FLIP_INTF_TEAR_INT_EN, 1);
 +	if (gic_v3_spi_attach(FLIP_TE_INTID, false, flip_te_intr, NULL) != KERN_SUCCESS) {
 +		flip_wr(at + FLIP_INTF_TEAR_INT_EN, 0);
@@ -75,7 +103,7 @@ index c91294f..7c6bb1a 100644
  /*
   * The register clocks, as Linux's dispcc-sm8750.c and gcc-sm8750.c name them. With them off a read
   * of the display controller never completes and the board resets (hakios-arm64e-dada, runs scan1
-@@ -215,20 +272,80 @@ flip_note_taken(void)
+@@ -215,20 +293,78 @@ flip_note_taken(void)
  	flip.taken_valid = true;
  }
  
@@ -103,8 +131,6 @@ index c91294f..7c6bb1a 100644
 + * INTF_TEAR_INT_EN 0x2a0, INTF_TEAR_INT_STATUS 0x2a4, INTF_TEAR_INT_COUNT_VAL 0x298.
 + */
 +static TUNABLE(uint32_t, gTE, "fb_te", 0);
-+extern kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge,
-+    void (*handler)(void *context, uint32_t intid), void *context);
 +
  /* Until CTL has taken the last flush (its bits clear at the refresh that latches them), LIMIT_US at most. */
  static bool
@@ -138,18 +164,18 @@ index c91294f..7c6bb1a 100644
 +			IOLockSleepDeadline(flip.te_lock, &flip.te_seq, deadline, THREAD_UNINT);
 +			IOLockUnlock(flip.te_lock);
 +		}
++		if ((flip_rd(FLIP_CTL(flip.ctl) + FLIP_CTL_FLUSH) & flip.flush) == 0) {
++			flip_note_taken();
++			return true;
++		}
++	}
++	for (uint32_t waited = 0; waited < limit_us; waited += poll) {
  		if ((flip_rd(FLIP_CTL(flip.ctl) + FLIP_CTL_FLUSH) & flip.flush) == 0) {
  			flip_note_taken();
  			return true;
  		}
 -		if (may_sleep && waited >= 200) {
 -			IOSleep(1);
-+	}
-+	for (uint32_t waited = 0; waited < limit_us; waited += poll) {
-+		if ((flip_rd(FLIP_CTL(flip.ctl) + FLIP_CTL_FLUSH) & flip.flush) == 0) {
-+			flip_note_taken();
-+			return true;
-+		}
 +		/* A step of 200 us or less is spun on: it is the difference between a frame landing in this
 +		 * refresh and the next one. Longer steps sleep, which needs whole milliseconds. */
 +		if (!may_sleep || poll <= 200) {
@@ -160,7 +186,7 @@ index c91294f..7c6bb1a 100644
  		}
  	}
  	if ((flip_rd(FLIP_CTL(flip.ctl) + FLIP_CTL_FLUSH) & flip.flush) == 0) {
-@@ -345,6 +462,9 @@ flip_start(uint64_t fb, uint8_t * fbBase, uint32_t bytes, uint32_t rows)
+@@ -345,6 +481,9 @@ flip_start(uint64_t fb, uint8_t * fbBase, uint32_t bytes, uint32_t rows)
  	flip.band0 = INT32_MAX;
  	flip.band1 = INT32_MIN;
  	flip.ready = true;
