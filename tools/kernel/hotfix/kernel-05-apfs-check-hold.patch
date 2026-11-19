@@ -1,8 +1,48 @@
+diff --git a/merge/xnu/files/bsd/sys/annibale_apfs_check.h b/merge/xnu/files/bsd/sys/annibale_apfs_check.h
+index e317753..3e509a0 100644
+--- a/merge/xnu/files/bsd/sys/annibale_apfs_check.h
++++ b/merge/xnu/files/bsd/sys/annibale_apfs_check.h
+@@ -118,6 +118,8 @@ void    par_walk(struct census *cs, uint32_t n);
+ 
+ /* the writing, bsd/dev/annibale_apfs_check_write.c */
+ void    apfs_write_check(const char *devname);
++/* the last apfs_check=7 verdict, kept so a hold can repeat it after the console has scrolled */
++extern char apfs_write_verdict[192];
+ void    apfs_store_check(const char *devname);
+ 
+ #endif /* _SYS_ANNIBALE_APFS_CHECK_H_ */
+
+diff --git a/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check_write.c b/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check_write.c
+index 809eeb8..3b9dcd2 100644
+--- a/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check_write.c
++++ b/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check_write.c
+@@ -180,6 +180,8 @@ wdev_hash(struct apfs_vol *vol, const struct apfs_inode *ino, uint8_t *buf, size
+ 	return 0;
+ }
+ 
++char apfs_write_verdict[192] = "not run";
++
+ void
+ apfs_write_check(const char *devname)
+ {
+@@ -343,6 +345,11 @@ apfs_write_check(const char *devname)
+ 			want *= FNV_PRIME;
+ 		}
+ 	}
++	snprintf(apfs_write_verdict, sizeof(apfs_write_verdict),
++	    "%llu bytes, hash %016llx, wanted %016llx: %s", ino.size, after, want,
++	    was == NULL ? "hashes not compared" :
++	    (want == after ? "OK, the bytes written are there and nothing else changed" :
++	    "BAD, the read back does not match what was asked for"));
+ 	printf("apfs-write: read back from a container opened again: %llu bytes, hash %016llx "
+ 	    "(was %016llx); the bytes written are %s\n", ino.size, after, before,
+ 	    was == NULL ? "not checked here" :
+
 diff --git a/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check.c b/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check.c
-index a21cfe0..2d5ff3a 100644
+index a21cfe0..1f972c4 100644
 --- a/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check.c
 +++ b/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check.c
-@@ -268,6 +268,30 @@ apfs_check_concurrent(void)
+@@ -268,6 +268,31 @@ apfs_check_concurrent(void)
  	printf("apfs-check: readers that disagreed or failed: %d\n", bad);
  	apfs_stats_print();
  }
@@ -26,14 +66,15 @@ index a21cfe0..2d5ff3a 100644
 +	printf("apfs-check: holding here: apfs_hold=1, the log above is the whole result\n");
 +	for (;;) {
 +		delay(5000000);
-+		printf("apfs-check: still holding (%u)\n", ++n);
++		/* the console scrolls: repeat the write check's own verdict so it can be read at any time */
++		printf("apfs-check: still holding (%u): %s\n", ++n, apfs_write_verdict);
 +	}
 +}
 +
  
  static void
  apfs_check_thread(void *arg, __unused wait_result_t wr)
-@@ -309,10 +333,12 @@ apfs_check_thread(void *arg, __unused wait_result_t wr)
+@@ -309,10 +334,12 @@ apfs_check_thread(void *arg, __unused wait_result_t wr)
  	/* the modes that write: no walk, no mount, no census */
  	if (mode == 7) {
  		apfs_write_check(devname);
@@ -46,7 +87,7 @@ index a21cfe0..2d5ff3a 100644
  		return;
  	}
  
-@@ -609,8 +635,7 @@ apfs_volume_mount(void)
+@@ -609,8 +636,7 @@ apfs_volume_mount(void)
  
  void
  annibale_apfs_check_init(void)
