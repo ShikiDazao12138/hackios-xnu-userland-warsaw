@@ -1,24 +1,11 @@
 diff --git a/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check.c b/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check.c
-index a21cfe0..9c837c2 100644
+index a21cfe0..2d5ff3a 100644
 --- a/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check.c
 +++ b/merge/xnu/files/bsd/dev/annibale/annibale_apfs_check.c
-@@ -309,10 +309,12 @@ apfs_check_thread(void *arg, __unused wait_result_t wr)
- 	/* the modes that write: no walk, no mount, no census */
- 	if (mode == 7) {
- 		apfs_write_check(devname);
-+		apfs_hold_if_asked();
- 		return;
- 	}
- 	if (mode == 8) {
- 		apfs_store_check(devname);
-+		apfs_hold_if_asked();
- 		return;
- 	}
- 
-@@ -607,10 +609,33 @@ apfs_volume_mount(void)
- 	}
+@@ -268,6 +268,30 @@ apfs_check_concurrent(void)
+ 	printf("apfs-check: readers that disagreed or failed: %d\n", bad);
+ 	apfs_stats_print();
  }
- 
 +/*
 + * apfs_hold=1 keeps the processor here after a write or store check instead of letting it run on.
 + *
@@ -43,6 +30,24 @@ index a21cfe0..9c837c2 100644
 +	}
 +}
 +
+ 
+ static void
+ apfs_check_thread(void *arg, __unused wait_result_t wr)
+@@ -309,10 +333,12 @@ apfs_check_thread(void *arg, __unused wait_result_t wr)
+ 	/* the modes that write: no walk, no mount, no census */
+ 	if (mode == 7) {
+ 		apfs_write_check(devname);
++		apfs_hold_if_asked();
+ 		return;
+ 	}
+ 	if (mode == 8) {
+ 		apfs_store_check(devname);
++		apfs_hold_if_asked();
+ 		return;
+ 	}
+ 
+@@ -609,8 +635,7 @@ apfs_volume_mount(void)
+ 
  void
  annibale_apfs_check_init(void)
 -{
